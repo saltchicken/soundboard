@@ -2,10 +2,8 @@ use soundboard::{
     AudioCommand, AudioResponse, get_audio_storage_path, get_socket_path, send_audio_command,
     start_pipewire_source, wait_for_server,
 };
-
 mod audio_player;
 use crate::audio_player::{PlaybackSink, play_audio_file};
-
 mod lcd;
 use crate::lcd::{create_fallback_image, create_fallback_lcd_image, update_lcd_mode};
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
@@ -17,15 +15,12 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
-
 const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Mode {
     Playback,
     Edit,
 }
-
 #[tokio::main]
 async fn main() {
     let socket_path = match get_socket_path() {
@@ -91,7 +86,6 @@ async fn main() {
         open("assets/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
     let img_play =
         open("assets/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
-
     let img_lcd_playback = open("assets/lcd_strip.png")
         .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([10, 50, 10])));
     let img_lcd_edit = open("assets/lcd_edit.png")
@@ -109,12 +103,10 @@ async fn main() {
                     AsyncStreamDeck::connect(&hid, kind, &serial).expect("Failed to connect");
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
-
                 let mut mode = Mode::Playback;
                 let mut playback_sink: PlaybackSink = PlaybackSink::Default;
                 println!("Starting in {:?} mode.", mode);
                 println!("Playback sink set to: {:?}", playback_sink);
-
                 update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await;
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
@@ -173,35 +165,19 @@ async fn main() {
                             DeviceStateUpdate::ButtonDown(key) => {
                                 match mode {
                                     Mode::Playback => {
-                                        // In Playback mode, just show a "pressed" state
-                                        if let Some(path) = button_files.get(&key)
-                                            && path.exists()
-                                        {
-                                            // Set to 'rec_on' as a "pressed" state
-                                            device
-                                                .set_button_image(key, img_rec_on.clone())
-                                                .await
-                                                .unwrap();
-                                            device.flush().await.unwrap();
-                                        }
-                                    }
-                                    Mode::Edit => {
-                                        // In Edit mode, this is the original record/delete-hold logic
+
                                         if let Some(path) = button_files.get(&key) {
                                             if path.exists() {
-                                                println!(
-                                                    "Button {} down (file exists). Holding for delete...",
-                                                    key
-                                                );
-                                                pending_delete.insert(key, Instant::now());
+
                                                 device
                                                     .set_button_image(key, img_rec_on.clone())
                                                     .await
                                                     .unwrap();
                                                 device.flush().await.unwrap();
                                             } else {
+
                                                 println!(
-                                                    "Button {} down (no file). Checking status...",
+                                                    "Button {} down (Playback Mode, no file). Checking status...",
                                                     key
                                                 );
                                                 match send_audio_command(
@@ -267,44 +243,39 @@ async fn main() {
                                             }
                                         }
                                     }
+                                    Mode::Edit => {
+
+                                        if let Some(path) = button_files.get(&key) {
+                                            if path.exists() {
+                                                println!(
+                                                    "Button {} down (Edit Mode, file exists). Holding for delete...",
+                                                    key
+                                                );
+                                                pending_delete.insert(key, Instant::now());
+                                                device
+                                                    .set_button_image(key, img_rec_on.clone())
+                                                    .await
+                                                    .unwrap();
+                                                device.flush().await.unwrap();
+                                            } else {
+
+                                                println!(
+                                                    "Button {} down (Edit Mode, no file). No action.",
+                                                    key
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
                                 match mode {
                                     Mode::Playback => {
-                                        // In Playback mode, ButtonUp triggers playback
-                                        if let Some(path) = button_files.get(&key)
-                                            && path.exists()
-                                        {
-                                            println!(
-                                                "Button {} up (Playback Mode). Triggering playback.",
-                                                key
-                                            );
 
-                                            // Spawn playback in a new task
-                                            let path_clone = path.clone();
-                                            let sink_clone = playback_sink;
-                                            tokio::spawn(async move {
-                                                if let Err(e) =
-                                                    play_audio_file(&path_clone, sink_clone).await
-                                                {
-                                                    eprintln!("Playback failed: {}", e);
-                                                }
-                                            });
-
-                                            // Set image back to "play"
-                                            device
-                                                .set_button_image(key, img_play.clone())
-                                                .await
-                                                .unwrap();
-                                            device.flush().await.unwrap();
-                                        }
-                                    }
-                                    Mode::Edit => {
-                                        // In Edit mode, this is the original stop-record/delete-commit logic
                                         if active_recording_key == Some(key) {
+
                                             println!(
-                                                "Button {} up, (was recording), sending STOP",
+                                                "Button {} up (Playback Mode, was recording), sending STOP",
                                                 key
                                             );
                                             match send_audio_command(
@@ -332,11 +303,42 @@ async fn main() {
                                                 }
                                             }
                                             device.flush().await.unwrap();
-                                        } else if let Some(start_time) = pending_delete.remove(&key)
-                                        {
+                                        } else {
+
+                                            if let Some(path) = button_files.get(&key)
+                                                && path.exists()
+                                            {
+                                                println!(
+                                                    "Button {} up (Playback Mode). Triggering playback.",
+                                                    key
+                                                );
+                                                // Spawn playback in a new task
+                                                let path_clone = path.clone();
+                                                let sink_clone = playback_sink;
+                                                tokio::spawn(async move {
+                                                    if let Err(e) =
+                                                        play_audio_file(&path_clone, sink_clone)
+                                                            .await
+                                                    {
+                                                        eprintln!("Playback failed: {}", e);
+                                                    }
+                                                });
+                                                // Set image back to "play"
+                                                device
+                                                    .set_button_image(key, img_play.clone())
+                                                    .await
+                                                    .unwrap();
+                                                device.flush().await.unwrap();
+                                            }
+                                        }
+                                    }
+                                    Mode::Edit => {
+
+
+                                        if let Some(start_time) = pending_delete.remove(&key) {
                                             let hold_duration = start_time.elapsed();
                                             println!(
-                                                "Button {} up (was pending delete). Held for {:?}",
+                                                "Button {} up (Edit Mode, was pending delete). Held for {:?}",
                                                 key, hold_duration
                                             );
                                             if hold_duration >= DELETE_HOLD_DURATION {
