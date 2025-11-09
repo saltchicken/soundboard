@@ -13,14 +13,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+
 use tokio::sync::watch;
-const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Mode {
     Playback,
     Edit,
 }
+
 #[tokio::main]
 async fn main() {
     let socket_path = match get_socket_path() {
@@ -37,6 +38,7 @@ async fn main() {
             return;
         }
     };
+
     let (shutdown_tx, mut shutdown_rx) = watch::channel(());
     let mut server_process = start_pipewire_source().unwrap();
     if let Err(e) = wait_for_server(&socket_path).await {
@@ -51,6 +53,7 @@ async fn main() {
         let _ = server_process.kill().await; // Kill the child process
         return; // Exit
     }
+
     // Spawn a task to monitor the server process
     let server_pid = server_process.id().unwrap_or(0);
     tokio::spawn(async move {
@@ -80,6 +83,7 @@ async fn main() {
             }
         }
     });
+
     let img_rec_off =
         open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
@@ -90,6 +94,7 @@ async fn main() {
         .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([10, 50, 10])));
     let img_lcd_edit = open("assets/lcd_edit.png")
         .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([50, 10, 10])));
+
     match new_hidapi() {
         Ok(hid) => {
             for (kind, serial) in list_devices(&hid) {
@@ -103,11 +108,13 @@ async fn main() {
                     AsyncStreamDeck::connect(&hid, kind, &serial).expect("Failed to connect");
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
+
                 let mut mode = Mode::Playback;
                 let mut playback_sink: PlaybackSink = PlaybackSink::Default;
                 println!("Starting in {:?} mode.", mode);
                 println!("Playback sink set to: {:?}", playback_sink);
                 update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await;
+
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
                     let file_name = format!("recording_{}.wav", (b'A' + i) as char);
@@ -115,8 +122,11 @@ async fn main() {
                     file_path.push(file_name);
                     button_files.insert(i, file_path);
                 }
+
                 let mut active_recording_key: Option<u8> = None;
-                let mut pending_delete: HashMap<u8, Instant> = HashMap::new();
+
+                let mut selected_for_delete: Option<u8> = None;
+
                 for (key, path) in &button_files {
                     let initial_image = if path.exists() {
                         img_play.clone()
@@ -125,6 +135,7 @@ async fn main() {
                     };
                     device.set_button_image(*key, initial_image).await.unwrap();
                 }
+
                 device.flush().await.unwrap();
                 let reader = device.get_reader();
                 loop {
@@ -132,6 +143,7 @@ async fn main() {
                         Ok(updates) => updates,
                         Err(_) => break,
                     };
+
                     for update in updates {
                         match update {
                             DeviceStateUpdate::EncoderTwist(dial, _ticks) => {
@@ -141,6 +153,28 @@ async fn main() {
                                         Mode::Edit => Mode::Playback,
                                     };
                                     println!("Mode switched to: {:?}", mode);
+
+                                    if mode == Mode::Playback {
+                                        if let Some(selected_key) = selected_for_delete.take() {
+                                            println!(
+                                                "Mode switched away from Edit. Deselecting key {}.",
+                                                selected_key
+                                            );
+                                            // Reset the button's image
+                                            if let Some(path) = button_files.get(&selected_key) {
+                                                let img = if path.exists() {
+                                                    img_play.clone()
+                                                } else {
+                                                    img_rec_off.clone()
+                                                };
+                                                device
+                                                    .set_button_image(selected_key, img)
+                                                    .await
+                                                    .unwrap();
+                                            }
+                                        }
+                                    }
+
                                     // Update the LCD strip to reflect the new mode
                                     update_lcd_mode(
                                         &device,
@@ -160,22 +194,69 @@ async fn main() {
                                         PlaybackSink::Both => PlaybackSink::Default,
                                     };
                                     println!("Playback sink set to: {:?}", playback_sink);
+                                } else if dial == 3 {
+                                    if mode == Mode::Edit {
+                                        if let Some(key_to_delete) = selected_for_delete.take() {
+                                            println!(
+                                                "Encoder 3 pressed in Edit mode. Deleting selected key: {}",
+                                                key_to_delete
+                                            );
+                                            if let Some(path) = button_files.get(&key_to_delete) {
+                                                match fs::remove_file(path) {
+                                                    Ok(_) => {
+                                                        println!(
+                                                            "...File {} deleted.",
+                                                            path.display()
+                                                        );
+                                                        device
+                                                            .set_button_image(
+                                                                key_to_delete,
+                                                                img_rec_off.clone(),
+                                                            )
+                                                            .await
+                                                            .unwrap();
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "...Failed to delete file {}: {}",
+                                                            path.display(),
+                                                            e
+                                                        );
+                                                        // Set image back to 'play' even if delete failed
+                                                        device
+                                                            .set_button_image(
+                                                                key_to_delete,
+                                                                img_play.clone(),
+                                                            )
+                                                            .await
+                                                            .unwrap();
+                                                    }
+                                                }
+                                                device.flush().await.unwrap();
+                                            }
+                                        } else {
+                                            println!(
+                                                "Encoder 3 pressed in Edit mode, but no sample is selected."
+                                            );
+                                        }
+                                    } else {
+                                        println!(
+                                            "Encoder 3 pressed (not in Edit mode). No action."
+                                        );
+                                    }
                                 }
                             }
                             DeviceStateUpdate::ButtonDown(key) => {
                                 match mode {
                                     Mode::Playback => {
-
                                         if let Some(path) = button_files.get(&key) {
                                             if path.exists() {
-
                                                 device
                                                     .set_button_image(key, img_rec_on.clone())
                                                     .await
                                                     .unwrap();
                                                 device.flush().await.unwrap();
                                             } else {
-
                                                 println!(
                                                     "Button {} down (Playback Mode, no file). Checking status...",
                                                     key
@@ -243,22 +324,62 @@ async fn main() {
                                             }
                                         }
                                     }
-                                    Mode::Edit => {
 
+                                    Mode::Edit => {
                                         if let Some(path) = button_files.get(&key) {
                                             if path.exists() {
-                                                println!(
-                                                    "Button {} down (Edit Mode, file exists). Holding for delete...",
-                                                    key
-                                                );
-                                                pending_delete.insert(key, Instant::now());
-                                                device
-                                                    .set_button_image(key, img_rec_on.clone())
-                                                    .await
-                                                    .unwrap();
+                                                if let Some(prev_selected_key) = selected_for_delete
+                                                {
+                                                    // A key is already selected
+                                                    if prev_selected_key == key {
+                                                        // This key was already selected. Toggle it OFF.
+                                                        println!(
+                                                            "Button {} down (Edit Mode). Deselecting {}.",
+                                                            key, key
+                                                        );
+                                                        device
+                                                            .set_button_image(key, img_play.clone())
+                                                            .await
+                                                            .unwrap();
+                                                        selected_for_delete = None;
+                                                    } else {
+                                                        // A different key was selected. Deselect old, select new.
+                                                        println!(
+                                                            "Button {} down (Edit Mode). Deselecting old key {}.",
+                                                            key, prev_selected_key
+                                                        );
+                                                        device
+                                                            .set_button_image(
+                                                                prev_selected_key,
+                                                                img_play.clone(),
+                                                            )
+                                                            .await
+                                                            .unwrap();
+
+                                                        println!("...Selecting new key {}.", key);
+                                                        device
+                                                            .set_button_image(
+                                                                key,
+                                                                img_rec_on.clone(),
+                                                            )
+                                                            .await
+                                                            .unwrap();
+                                                        selected_for_delete = Some(key);
+                                                    }
+                                                } else {
+                                                    // Nothing was selected. Select this key.
+                                                    println!(
+                                                        "Button {} down (Edit Mode). Selecting key {} for deletion.",
+                                                        key, key
+                                                    );
+                                                    device
+                                                        .set_button_image(key, img_rec_on.clone())
+                                                        .await
+                                                        .unwrap();
+                                                    selected_for_delete = Some(key);
+                                                }
                                                 device.flush().await.unwrap();
                                             } else {
-
                                                 println!(
                                                     "Button {} down (Edit Mode, no file). No action.",
                                                     key
@@ -271,9 +392,7 @@ async fn main() {
                             DeviceStateUpdate::ButtonUp(key) => {
                                 match mode {
                                     Mode::Playback => {
-
                                         if active_recording_key == Some(key) {
-
                                             println!(
                                                 "Button {} up (Playback Mode, was recording), sending STOP",
                                                 key
@@ -304,7 +423,6 @@ async fn main() {
                                             }
                                             device.flush().await.unwrap();
                                         } else {
-
                                             if let Some(path) = button_files.get(&key)
                                                 && path.exists()
                                             {
@@ -332,62 +450,11 @@ async fn main() {
                                             }
                                         }
                                     }
+
                                     Mode::Edit => {
-
-
-                                        if let Some(start_time) = pending_delete.remove(&key) {
-                                            let hold_duration = start_time.elapsed();
-                                            println!(
-                                                "Button {} up (Edit Mode, was pending delete). Held for {:?}",
-                                                key, hold_duration
-                                            );
-                                            if hold_duration >= DELETE_HOLD_DURATION {
-                                                // Held for > 2s: Delete the file
-                                                if let Some(path) = button_files.get(&key) {
-                                                    match fs::remove_file(path) {
-                                                        Ok(_) => {
-                                                            println!(
-                                                                "...File {} deleted.",
-                                                                path.display()
-                                                            );
-                                                            device
-                                                                .set_button_image(
-                                                                    key,
-                                                                    img_rec_off.clone(),
-                                                                )
-                                                                .await
-                                                                .unwrap();
-                                                        }
-                                                        Err(e) => {
-                                                            eprintln!(
-                                                                "...Failed to delete file {}: {}",
-                                                                path.display(),
-                                                                e
-                                                            );
-                                                            device
-                                                                .set_button_image(
-                                                                    key,
-                                                                    img_play.clone(),
-                                                                )
-                                                                .await
-                                                                .unwrap();
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                println!("...Hold < 2s. (Edit Mode) No action.");
-                                                if let Some(path) = button_files.get(&key)
-                                                    && path.exists()
-                                                {
-                                                    // Set image back to "play"
-                                                    device
-                                                        .set_button_image(key, img_play.clone())
-                                                        .await
-                                                        .unwrap();
-                                                }
-                                            }
-                                            device.flush().await.unwrap();
-                                        }
+                                        // ButtonUp does nothing in Edit mode now.
+                                        // Selection is handled on ButtonDown.
+                                        // Deletion is handled by Encoder 3.
                                     }
                                 }
                             }
@@ -403,10 +470,12 @@ async fn main() {
         }
         Err(e) => eprintln!("Failed to create HidApi instance: {}", e),
     }
+
     println!("Main function exiting. Ensuring server is killed.");
     if let Err(e) = shutdown_tx.send(()) {
         eprintln!("Failed to send shutdown signal: {}", e);
     }
+
     // Clean up the socket file
     if let Err(e) = fs::remove_file(&socket_path)
         && e.kind() != io::ErrorKind::NotFound
