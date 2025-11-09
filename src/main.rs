@@ -1,119 +1,29 @@
-mod audio_player;
-use crate::audio_player::{PlaybackSink, play_audio_file};
-use elgato_streamdeck::images::convert_image_with_format;
-use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
-use image::open;
-use image::{DynamicImage, Rgb};
 use soundboard::{
     AudioCommand, AudioResponse, get_audio_storage_path, get_socket_path, send_audio_command,
+    start_pipewire_source, wait_for_server,
 };
+
+mod audio_player;
+use crate::audio_player::{PlaybackSink, play_audio_file};
+
+mod lcd;
+use crate::lcd::{create_fallback_image, create_fallback_lcd_image, update_lcd_mode};
+use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
+use image::Rgb;
+use image::open;
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
-const SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
-const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Mode {
     Playback,
     Edit,
-}
-
-async fn update_lcd_mode(
-    device: &AsyncStreamDeck,
-    mode: Mode,
-    img_playback: &DynamicImage,
-    img_edit: &DynamicImage,
-) {
-    // ... (This function is unchanged)
-    println!("Setting LCD mode to: {:?}", mode);
-    let img_to_use = match mode {
-        Mode::Playback => img_playback,
-        Mode::Edit => img_edit,
-    };
-    if let Some(format) = device.kind().lcd_image_format() {
-        let scaled_image = img_to_use.clone().resize_to_fill(
-            format.size.0 as u32,
-            format.size.1 as u32,
-            image::imageops::FilterType::Nearest,
-        );
-        let converted_image = convert_image_with_format(format, scaled_image).unwrap();
-        let _ = device.write_lcd_fill(&converted_image).await;
-    } else {
-        eprintln!("Failed to set LCD image (is this a Stream Deck Plus?)");
-    }
-}
-
-fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
-    DynamicImage::ImageRgb8(image::RgbImage::from_fn(72, 72, move |_, _| color))
-}
-
-fn create_fallback_lcd_image(color: Rgb<u8>) -> DynamicImage {
-    DynamicImage::ImageRgb8(image::RgbImage::from_fn(800, 100, move |_, _| color))
-}
-
-fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
-    // 1. Find the path to our own executable
-    let mut server_exe_path = match env::current_exe() {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("Failed to get current executable path: {}", e);
-            return Err(e);
-        }
-    };
-    server_exe_path.pop();
-    server_exe_path.push("pipewire_source");
-    println!(
-        "Attempting to spawn server at: {}",
-        server_exe_path.display()
-    );
-    let server_process: Child = Command::new(&server_exe_path)
-        .stdout(Stdio::null()) // Silences the server's stdout
-        .stderr(Stdio::null()) // Silences the server's stderr
-        .spawn()
-        .expect("Failed to spawn pipewire_source server. Did you `cargo build` first?");
-    let server_pid = server_process.id().unwrap_or(0);
-    println!(
-        "Spawned server process (PID: {}). Waiting for it to initialize...",
-        server_pid
-    );
-    Ok(server_process)
-}
-
-async fn wait_for_server(socket_path: &Path) -> io::Result<()> {
-    let start = tokio::time::Instant::now();
-    println!("Waiting for server socket at {}...", socket_path.display());
-    loop {
-        // Check for timeout
-        if start.elapsed() > SERVER_START_TIMEOUT {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Server failed to start within timeout.",
-            ));
-        }
-        // Try to connect
-        match UnixStream::connect(socket_path).await {
-            Ok(_) => {
-                // Connection successful, socket exists.
-                println!("...Server socket found!");
-                return Ok(()); // Success
-            }
-            Err(_) => {
-                // Socket not ready, wait and retry.
-            }
-        }
-        // Wait before retrying
-        tokio::time::sleep(SERVER_RETRY_INTERVAL).await;
-    }
 }
 
 #[tokio::main]
