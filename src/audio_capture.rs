@@ -1,4 +1,3 @@
-// This file contains the logic from the old src/bin/pipewire_source.rs
 use crate::AudioCommand;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
@@ -10,11 +9,7 @@ use std::convert::TryInto;
 use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    Mutex,
-    mpsc::Receiver,
-};
+use std::sync::{Arc, Mutex, mpsc::Receiver};
 use std::thread;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -77,7 +72,6 @@ fn save_recording_from_buffer(
     }
 }
 
-
 /// It runs in a separate thread and blocks on the MPSC channel.
 fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>) {
     // This loop blocks on `rx.recv()`, waiting for commands from the main thread.
@@ -99,7 +93,6 @@ fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>)
                                 user_data.buffer.clear();
                             }
                             State::Recording(_) => {
-
                                 eprintln!("Refused START: Already recording.");
                             }
                         }
@@ -125,7 +118,6 @@ fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>)
     }
     println!("Audio command channel closed. Exiting command loop.");
 }
-
 
 pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
     pw::init();
@@ -175,7 +167,7 @@ pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
         })
         .process(|stream, user_data_arc| {
             let mut user_data = user_data_arc.lock().unwrap();
-            let Some(format) = user_data.format.as_ref() else {
+            let Some(_format) = user_data.format.as_ref() else {
                 return;
             };
             if user_data.state == State::Listening {
@@ -233,13 +225,12 @@ pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
     )?;
     // --- End of Stream Setup ---
 
-
     let ipc_data = data.clone();
     thread::spawn(move || {
         handle_audio_commands(rx, ipc_data);
     });
 
-
     mainloop.run();
     Ok(())
 }
+
