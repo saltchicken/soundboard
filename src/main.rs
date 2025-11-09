@@ -1,8 +1,12 @@
+mod audio_player;
+use crate::audio_player::{PlaybackSink, play_audio_file};
 use elgato_streamdeck::images::convert_image_with_format;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
 use image::open;
 use image::{DynamicImage, Rgb};
-use soundboard::{AudioCommand, AudioResponse, get_audio_storage_path, get_socket_path};
+use soundboard::{
+    AudioCommand, AudioResponse, get_audio_storage_path, get_socket_path, send_audio_command,
+};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -10,7 +14,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
@@ -23,152 +26,6 @@ const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
 enum Mode {
     Playback,
     Edit,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum PlaybackSink {
-    Default,
-    Mixer,
-    Both,
-}
-
-async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::Result<()> {
-    let player = "pw-play";
-    println!(
-        "Attempting to play file with '{}': {}",
-        player,
-        path.display()
-    );
-
-    let mut cmd_default = Command::new(player);
-    cmd_default.arg(path);
-    cmd_default.stdout(Stdio::null()).stderr(Stdio::null());
-
-    let mut cmd_mixer = Command::new(player);
-    cmd_mixer.arg("--target");
-    cmd_mixer.arg("MyMixer");
-    cmd_mixer.arg(path);
-    cmd_mixer.stdout(Stdio::null()).stderr(Stdio::null());
-
-    match sink_target {
-        PlaybackSink::Default => {
-            println!("...routing playback to Default.");
-            let status = cmd_default.status().await?;
-            if !status.success() {
-                let msg = format!("Playback command (Default) failed with status: {}", status);
-                eprintln!("{}", msg);
-                return Err(io::Error::other(msg));
-            }
-        }
-        PlaybackSink::Mixer => {
-            println!("...routing playback to sink: MyMixer");
-            let status = cmd_mixer.status().await?;
-            if !status.success() {
-                let msg = format!("Playback command (MyMixer) failed with status: {}", status);
-                eprintln!("{}", msg);
-                return Err(io::Error::other(msg));
-            }
-        }
-        PlaybackSink::Both => {
-            println!("...routing playback to BOTH Default and MyMixer.");
-            // Spawn both commands concurrently
-            let default_handle = tokio::spawn(async move { cmd_default.status().await });
-            let mixer_handle = tokio::spawn(async move { cmd_mixer.status().await });
-
-            // Await both handles
-            match tokio::try_join!(default_handle, mixer_handle) {
-                Ok((Ok(status_default), Ok(status_mixer))) => {
-                    if !status_default.success() {
-                        eprintln!("Playback (Default) failed with status: {}", status_default);
-                    }
-                    if !status_mixer.success() {
-                        eprintln!("Playback (MyMixer) failed with status: {}", status_mixer);
-                    }
-                    if !status_default.success() || !status_mixer.success() {
-                        return Err(io::Error::other("One or more playback commands failed."));
-                    }
-                }
-                Ok((Err(e), _)) | Ok((_, Err(e))) => {
-                    let msg = format!("Failed to get command status: {}", e);
-                    eprintln!("{}", msg);
-                    return Err(io::Error::other(msg));
-                }
-                Err(e) => {
-                    let msg = format!("Task join failed: {}", e);
-                    eprintln!("{}", msg);
-                    return Err(io::Error::other(msg));
-                }
-            }
-        }
-    }
-
-    println!("Playback successful for sink: {:?}", sink_target);
-    Ok(())
-}
-
-async fn send_audio_command(
-    socket_path: &Path,
-    command: &AudioCommand,
-) -> io::Result<AudioResponse> {
-    // ... (This function is unchanged)
-    let stream = match UnixStream::connect(socket_path).await {
-        Ok(stream) => stream,
-        Err(e) => {
-            let msg = format!(
-                "Failed to connect to socket {}: {}",
-                socket_path.display(),
-                e
-            );
-            eprintln!("{}", msg);
-            return Err(io::Error::new(io::ErrorKind::ConnectionRefused, msg));
-        }
-    };
-    let (reader, writer) = stream.into_split();
-    let mut buf_writer = tokio::io::BufWriter::new(writer);
-    let mut buf_reader = BufReader::new(reader);
-    let cmd_json = match serde_json::to_string(command) {
-        Ok(json) => json + "\n", // Add newline as delimiter
-        Err(e) => {
-            return Err(io::Error::other(format!(
-                "Failed to serialize command: {}",
-                e
-            )));
-        }
-    };
-    if let Err(e) = buf_writer.write_all(cmd_json.as_bytes()).await {
-        eprintln!("Failed to write command: {}", e);
-        return Err(e);
-    }
-    if let Err(e) = buf_writer.flush().await {
-        eprintln!("Failed to flush command: {}", e);
-        return Err(e);
-    }
-    if let Err(e) = buf_writer.shutdown().await {
-        eprintln!("Failed to shutdown writer: {}", e);
-        return Err(e);
-    }
-    let mut response_line = String::new();
-    if let Err(e) = buf_reader.read_line(&mut response_line).await {
-        eprintln!("Failed to read response: {}", e);
-        return Err(e);
-    }
-    if response_line.is_empty() {
-        let msg = "Server sent an empty response.";
-        eprintln!("{}", msg);
-        return Err(io::Error::other(msg));
-    }
-    match serde_json::from_str::<AudioResponse>(&response_line) {
-        Ok(response) => Ok(response),
-        Err(e) => {
-            let msg = format!(
-                "Failed to parse server response ('{}'): {}",
-                response_line.trim(),
-                e
-            );
-            eprintln!("{}", msg);
-            Err(io::Error::other(msg))
-        }
-    }
 }
 
 async fn update_lcd_mode(
