@@ -18,7 +18,6 @@ use tokio::sync::watch;
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-// ‼️ Removed const PLAYBACK_SINK_NAME
 const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -27,40 +26,102 @@ enum Mode {
     Edit,
 }
 
-async fn play_audio_file(path: &PathBuf, sink_name: Option<&str>) -> io::Result<()> {
-    // ‼️ Added sink_name argument
+// ‼️ Define the three sink states
+#[derive(Debug, PartialEq, Eq, Clone, Copy)] // ‼️
+enum PlaybackSink {
+    // ‼️
+    Default, // ‼️
+    Mixer,   // ‼️
+    Both,    // ‼️
+} // ‼️
+
+async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::Result<()> {
+    // ‼️ Changed argument
     let player = "pw-play";
     println!(
         "Attempting to play file with '{}': {}",
         player,
         path.display()
     );
-    // Create the command
-    let mut cmd = Command::new(player);
-    if let Some(sink_name) = sink_name {
-        // ‼️ Use the function argument
-        cmd.arg("--target");
-        cmd.arg(sink_name);
-        println!("...routing playback to sink: {}", sink_name);
-    } else {
-        println!("...routing playback to default output.");
-    }
-    cmd.arg(path);
-    // Run the command and wait for its status
-    // This runs in a spawned tokio task, so it won't block the UI
-    let status = cmd.status().await?;
-    if status.success() {
-        println!("Playback successful.");
-        Ok(())
-    } else {
-        // This will catch errors like "pw-play: command not found"
-        let msg = format!(
-            "Playback command '{}' failed with status: {}",
-            player, status
-        );
-        eprintln!("{}", msg);
-        Err(io::Error::other(msg))
-    }
+
+    // ‼️ Create command templates
+    let mut cmd_default = Command::new(player); // ‼️
+    cmd_default.arg(path); // ‼️
+    cmd_default.stdout(Stdio::null()).stderr(Stdio::null()); // ‼️ Silence output
+
+    let mut cmd_mixer = Command::new(player); // ‼️
+    cmd_mixer.arg("--target"); // ‼️
+    cmd_mixer.arg("MyMixer"); // ‼️
+    cmd_mixer.arg(path); // ‼️
+    cmd_mixer.stdout(Stdio::null()).stderr(Stdio::null()); // ‼️ Silence output
+
+    match sink_target {
+        // ‼️
+        PlaybackSink::Default => {
+            // ‼️
+            println!("...routing playback to Default."); // ‼️
+            let status = cmd_default.status().await?; // ‼️
+            if !status.success() {
+                // ‼️
+                let msg = format!("Playback command (Default) failed with status: {}", status); // ‼️
+                eprintln!("{}", msg); // ‼️
+                return Err(io::Error::other(msg)); // ‼️
+            } // ‼️
+        } // ‼️
+        PlaybackSink::Mixer => {
+            // ‼️
+            println!("...routing playback to sink: MyMixer"); // ‼️
+            let status = cmd_mixer.status().await?; // ‼️
+            if !status.success() {
+                // ‼️
+                let msg = format!("Playback command (MyMixer) failed with status: {}", status); // ‼️
+                eprintln!("{}", msg); // ‼️
+                return Err(io::Error::other(msg)); // ‼️
+            } // ‼️
+        } // ‼️
+        PlaybackSink::Both => {
+            // ‼️
+            println!("...routing playback to BOTH Default and MyMixer."); // ‼️
+            // Spawn both commands concurrently
+            let default_handle = tokio::spawn(async move { cmd_default.status().await }); // ‼️
+            let mixer_handle = tokio::spawn(async move { cmd_mixer.status().await }); // ‼️
+
+            // Await both handles
+            match tokio::try_join!(default_handle, mixer_handle) {
+                // ‼️
+                Ok((Ok(status_default), Ok(status_mixer))) => {
+                    // ‼️
+                    if !status_default.success() {
+                        // ‼️
+                        eprintln!("Playback (Default) failed with status: {}", status_default); // ‼️
+                    } // ‼️
+                    if !status_mixer.success() {
+                        // ‼️
+                        eprintln!("Playback (MyMixer) failed with status: {}", status_mixer); // ‼️
+                    } // ‼️
+                    if !status_default.success() || !status_mixer.success() {
+                        // ‼️
+                        return Err(io::Error::other("One or more playback commands failed.")); // ‼️
+                    } // ‼️
+                } // ‼️
+                Ok((Err(e), _)) | Ok((_, Err(e))) => {
+                    // ‼️
+                    let msg = format!("Failed to get command status: {}", e); // ‼️
+                    eprintln!("{}", msg); // ‼️
+                    return Err(io::Error::other(msg)); // ‼️
+                } // ‼️
+                Err(e) => {
+                    // ‼️
+                    let msg = format!("Task join failed: {}", e); // ‼️
+                    eprintln!("{}", msg); // ‼️
+                    return Err(io::Error::other(msg)); // ‼️
+                } // ‼️
+            } // ‼️
+        } // ‼️
+    } // ‼️
+
+    println!("Playback successful for sink: {:?}", sink_target); // ‼️
+    Ok(()) // ‼️
 }
 
 async fn send_audio_command(
@@ -136,28 +197,24 @@ async fn update_lcd_mode(
     img_playback: &DynamicImage, // ‼️
     img_edit: &DynamicImage,     // ‼️
 ) {
-    // ‼️
-    println!("Setting LCD mode to: {:?}", mode); // ‼️
+    // ... (This function is unchanged)
+    println!("Setting LCD mode to: {:?}", mode);
     let img_to_use = match mode {
-        // ‼️
-        Mode::Playback => img_playback, // ‼️
-        Mode::Edit => img_edit,         // ‼️
-    }; // ‼️
+        Mode::Playback => img_playback,
+        Mode::Edit => img_edit,
+    };
     if let Some(format) = device.kind().lcd_image_format() {
-        // ‼️
         let scaled_image = img_to_use.clone().resize_to_fill(
-            // ‼️
-            format.size.0 as u32,                 // ‼️
-            format.size.1 as u32,                 // ‼️
-            image::imageops::FilterType::Nearest, // ‼️
-        ); // ‼️
-        let converted_image = convert_image_with_format(format, scaled_image).unwrap(); // ‼️
-        let _ = device.write_lcd_fill(&converted_image).await; // ‼️
+            format.size.0 as u32,
+            format.size.1 as u32,
+            image::imageops::FilterType::Nearest,
+        );
+        let converted_image = convert_image_with_format(format, scaled_image).unwrap();
+        let _ = device.write_lcd_fill(&converted_image).await;
     } else {
-        // ‼️
-        eprintln!("Failed to set LCD image (is this a Stream Deck Plus?)"); // ‼️
-    } // ‼️
-} // ‼️
+        eprintln!("Failed to set LCD image (is this a Stream Deck Plus?)");
+    }
+}
 
 fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
     // ... (This function is unchanged)
@@ -310,12 +367,14 @@ async fn main() {
                     AsyncStreamDeck::connect(&hid, kind, &serial).expect("Failed to connect");
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
-                // ‼️ Initialize state and set initial LCD
-                let mut mode = Mode::Playback; // ‼️
-                let mut playback_sink_name: Option<&'static str> = None; // ‼️ Added mutable sink state
-                println!("Starting in {:?} mode.", mode); // ‼️
-                println!("Playback sink set to: Default"); // ‼️ Added initial sink status
-                update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await; // ‼️
+
+                // ‼️ Initialize states
+                let mut mode = Mode::Playback;
+                let mut playback_sink: PlaybackSink = PlaybackSink::Default; // ‼️ Use new enum
+                println!("Starting in {:?} mode.", mode);
+                println!("Playback sink set to: {:?}", playback_sink); // ‼️ Updated log
+
+                update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await;
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
                     let file_name = format!("recording_{}.wav", (b'A' + i) as char);
@@ -361,24 +420,17 @@ async fn main() {
                                 }
                             }
                             DeviceStateUpdate::EncoderDown(dial) => {
-                                // ‼️
                                 if dial == 0 {
-                                    // ‼️ Assuming dial 0 for the press
-                                    playback_sink_name = match playback_sink_name {
+                                    // ‼️ Cycle through the three states
+                                    playback_sink = match playback_sink {
                                         // ‼️
-                                        Some(_) => {
-                                            // ‼️
-                                            println!("Playback sink set to: Default"); // ‼️
-                                            None // ‼️
-                                        } // ‼️
-                                        None => {
-                                            // ‼️
-                                            println!("Playback sink set to: MyMixer"); // ‼️
-                                            Some("MyMixer") // ‼️
-                                        } // ‼️
+                                        PlaybackSink::Default => PlaybackSink::Mixer, // ‼️
+                                        PlaybackSink::Mixer => PlaybackSink::Both,    // ‼️
+                                        PlaybackSink::Both => PlaybackSink::Default,  // ‼️
                                     }; // ‼️
-                                } // ‼️
-                            } // ‼️
+                                    println!("Playback sink set to: {:?}", playback_sink); // ‼️
+                                }
+                            }
                             DeviceStateUpdate::ButtonDown(key) => {
                                 match mode {
                                     Mode::Playback => {
@@ -387,15 +439,14 @@ async fn main() {
                                             if path.exists() {
                                                 // Set to 'rec_on' as a "pressed" state
                                                 device
-                                                    .set_button_image(key, img_rec_on.clone()) // ‼️
-                                                    .await // ‼️
-                                                    .unwrap(); // ‼️
-                                                device.flush().await.unwrap(); // ‼️
-                                            } // ‼️
-                                        } // ‼️
-                                    } // ‼️
+                                                    .set_button_image(key, img_rec_on.clone())
+                                                    .await
+                                                    .unwrap();
+                                                device.flush().await.unwrap();
+                                            }
+                                        }
+                                    }
                                     Mode::Edit => {
-                                        // ‼️
                                         // In Edit mode, this is the original record/delete-hold logic
                                         if let Some(path) = button_files.get(&key) {
                                             if path.exists() {
@@ -476,53 +527,44 @@ async fn main() {
                                                 }
                                             }
                                         }
-                                    } // ‼️
-                                } // ‼️
+                                    }
+                                }
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
                                 // ‼️ Wrap logic in mode match
                                 match mode {
-                                    // ‼️
                                     Mode::Playback => {
-                                        // ‼️
                                         // In Playback mode, ButtonUp triggers playback
                                         if let Some(path) = button_files.get(&key) {
-                                            // ‼️
                                             if path.exists() {
-                                                // ‼️
                                                 println!(
                                                     "Button {} up (Playback Mode). Triggering playback.",
                                                     key
-                                                ); // ‼️
+                                                );
 
                                                 // Spawn playback in a new task
                                                 let path_clone = path.clone();
+                                                let sink_clone = playback_sink; // ‼️ Clone the enum state
                                                 tokio::spawn(async move {
-                                                    // ‼️
-                                                    if let Err(e) = // ‼️
-                                                        play_audio_file(
-                                                            &path_clone,
-                                                            playback_sink_name,
-                                                        )
-                                                        .await
-                                                    // ‼️ Pass sink state
+                                                    if let Err(e) =
+                                                        play_audio_file(&path_clone, sink_clone)
+                                                            .await
+                                                    // ‼️ Pass enum
                                                     {
-                                                        // ‼️
-                                                        eprintln!("Playback failed: {}", e); // ‼️
-                                                    } // ‼️
-                                                }); // ‼️
+                                                        eprintln!("Playback failed: {}", e);
+                                                    }
+                                                });
 
                                                 // Set image back to "play"
-                                                device // ‼️
-                                                    .set_button_image(key, img_play.clone()) // ‼️
-                                                    .await // ‼️
-                                                    .unwrap(); // ‼️
-                                                device.flush().await.unwrap(); // ‼️
-                                            } // ‼️
-                                        } // ‼️
-                                    } // ‼️
+                                                device
+                                                    .set_button_image(key, img_play.clone())
+                                                    .await
+                                                    .unwrap();
+                                                device.flush().await.unwrap();
+                                            }
+                                        }
+                                    }
                                     Mode::Edit => {
-                                        // ‼️
                                         // In Edit mode, this is the original stop-record/delete-commit logic
                                         if active_recording_key == Some(key) {
                                             println!(
@@ -596,23 +638,21 @@ async fn main() {
                                                 }
                                             } else {
                                                 // ‼️ Held for < 2s in Edit Mode: Do nothing
-                                                println!("...Hold < 2s. (Edit Mode) No action."); // ‼️
+                                                println!("...Hold < 2s. (Edit Mode) No action.");
                                                 if let Some(path) = button_files.get(&key) {
-                                                    // ‼️
                                                     if path.exists() {
-                                                        // ‼️
                                                         // Set image back to "play"
-                                                        device // ‼️
-                                                            .set_button_image(key, img_play.clone()) // ‼️
-                                                            .await // ‼️
-                                                            .unwrap(); // ‼️
-                                                    } // ‼️
-                                                } // ‼️
+                                                        device
+                                                            .set_button_image(key, img_play.clone())
+                                                            .await
+                                                            .unwrap();
+                                                    }
+                                                }
                                             }
                                             device.flush().await.unwrap();
                                         }
-                                    } // ‼️
-                                } // ‼️
+                                    }
+                                }
                             }
                             _ => {}
                         }
