@@ -1,4 +1,4 @@
-use soundboard::{AudioCommand, AudioResponse};
+use soundboard::{AudioCommand, AudioResponse, get_socket_path};
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
@@ -76,10 +76,10 @@ fn save_recording_from_buffer(
 }
 
 fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
-    let socket_path = "/tmp/rust-audio-monitor.sock";
-    let _ = fs::remove_file(socket_path);
-    let listener = UnixListener::bind(socket_path)?;
-    println!("Control socket listening at {}", socket_path);
+    let socket_path = get_socket_path()?;
+    let _ = fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path)?;
+    println!("Control socket listening at {}", socket_path.display());
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {

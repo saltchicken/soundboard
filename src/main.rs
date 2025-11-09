@@ -1,4 +1,4 @@
-use soundboard::{AudioCommand, AudioResponse};
+use soundboard::{AudioCommand, AudioResponse, get_audio_storage_path, get_socket_path};
 
 use elgato_streamdeck::images::convert_image_with_format;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
+use tokio::sync::watch;
 
-const SOCKET_PATH: &str = "/tmp/rust-audio-monitor.sock";
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 // const PLAYBACK_SINK_NAME: Option<&str> = Some("MyMixer");
@@ -56,34 +56,18 @@ async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
     }
 }
 
-// TODO: Implement this
-fn get_socket_path() -> std::io::Result<PathBuf> {
-    match dirs::runtime_dir() {
-        Some(mut path) => {
-            path.push("soundboard.sock");
-            Ok(path)
-        }
-        None => Err(std::io::Error::other("Could not find runtime directory")),
-    }
-}
-
-// TODO: Implement this
-fn get_audio_storage_path() -> std::io::Result<PathBuf> {
-    match dirs::audio_dir() {
-        Some(mut path) => {
-            path.push("soundboard-recordings");
-            std::fs::create_dir_all(&path)?;
-            Ok(path)
-        }
-        None => Err(std::io::Error::other("Could not find audio directory")),
-    }
-}
-
-async fn send_audio_command(command: &AudioCommand) -> io::Result<AudioResponse> {
-    let stream = match UnixStream::connect(SOCKET_PATH).await {
+async fn send_audio_command(
+    socket_path: &Path,
+    command: &AudioCommand,
+) -> io::Result<AudioResponse> {
+    let stream = match UnixStream::connect(socket_path).await {
         Ok(stream) => stream,
         Err(e) => {
-            let msg = format!("Failed to connect to socket {}: {}", SOCKET_PATH, e);
+            let msg = format!(
+                "Failed to connect to socket {}: {}",
+                socket_path.display(),
+                e
+            );
             eprintln!("{}", msg);
             return Err(io::Error::new(io::ErrorKind::ConnectionRefused, msg));
         }
@@ -178,9 +162,9 @@ fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
     Ok(server_process)
 }
 
-async fn wait_for_server() -> io::Result<()> {
+async fn wait_for_server(socket_path: &Path) -> io::Result<()> {
     let start = tokio::time::Instant::now();
-    println!("Waiting for server socket at {}...", SOCKET_PATH);
+    println!("Waiting for server socket at {}...", socket_path.display());
     loop {
         // Check for timeout
         if start.elapsed() > SERVER_START_TIMEOUT {
@@ -190,7 +174,7 @@ async fn wait_for_server() -> io::Result<()> {
             ));
         }
         // Try to connect
-        match UnixStream::connect(SOCKET_PATH).await {
+        match UnixStream::connect(socket_path).await {
             Ok(_) => {
                 // Connection successful, socket exists.
                 println!("...Server socket found!");
@@ -207,13 +191,33 @@ async fn wait_for_server() -> io::Result<()> {
 
 #[tokio::main]
 async fn main() {
+    let socket_path = match get_socket_path() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("Failed to get socket path: {}", e);
+            return;
+        }
+    };
+    let audio_storage_path = match get_audio_storage_path() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("Failed to get audio storage path: {}", e);
+            return;
+        }
+    };
+
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+
     let mut server_process = start_pipewire_source().unwrap();
-    if let Err(e) = wait_for_server().await {
+    if let Err(e) = wait_for_server(&socket_path).await {
         eprintln!(
             "Failed to connect to pipewire_source server: {}. Is it already running?",
             e
         );
-        eprintln!("Ensure '{SOCKET_PATH}' is writable and the server can start.");
+        eprintln!(
+            "Ensure '{}' is writable and the server can start.",
+            socket_path.display()
+        );
         let _ = server_process.kill().await; // Kill the child process
         return; // Exit
     }
@@ -221,22 +225,32 @@ async fn main() {
     // Spawn a task to monitor the server process
     let server_pid = server_process.id().unwrap_or(0);
     tokio::spawn(async move {
-        match server_process.wait().await {
-            Ok(status) => {
-                eprintln!(
-                    "Audio server (PID: {}) exited with status: {}",
-                    server_pid, status
-                );
+        tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => {
+                eprintln!("Main task requested shutdown. Killing server (PID: {})...", server_pid);
+                if let Err(e) = server_process.kill().await {
+                    eprintln!("Failed to kill server process: {}", e);
+                }
             }
-            Err(e) => {
-                eprintln!(
-                    "Failed to wait on audio server (PID: {}): {}",
-                    server_pid, e
-                );
+            status = server_process.wait() => {
+                match status {
+                    Ok(status) => {
+                        eprintln!(
+                            "Audio server (PID: {}) exited on its own with status: {}",
+                            server_pid, status
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to wait on audio server (PID: {}): {}",
+                            server_pid, e
+                        );
+                    }
+                }
             }
         }
     });
-
     let img_rec_off =
         open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
@@ -272,8 +286,10 @@ async fn main() {
                 }
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
-                    let file_name = format!("/tmp/recording_{}.wav", (b'A' + i) as char);
-                    button_files.insert(i, PathBuf::from(file_name));
+                    let file_name = format!("recording_{}.wav", (b'A' + i) as char);
+                    let mut file_path = audio_storage_path.clone();
+                    file_path.push(file_name);
+                    button_files.insert(i, file_path);
                 }
                 let mut active_recording_key: Option<u8> = None;
                 let mut pending_delete: HashMap<u8, Instant> = HashMap::new();
@@ -287,7 +303,7 @@ async fn main() {
                 }
                 device.flush().await.unwrap();
                 let reader = device.get_reader();
-                'infinite: loop {
+                loop {
                     let updates = match reader.read(100.0).await {
                         Ok(updates) => updates,
                         Err(_) => break,
@@ -312,14 +328,21 @@ async fn main() {
                                             "Button {} down (no file). Checking status...",
                                             key
                                         );
-                                        match send_audio_command(&AudioCommand::Status).await {
+                                        match send_audio_command(
+                                            &socket_path,
+                                            &AudioCommand::Status,
+                                        )
+                                        .await
+                                        {
                                             Ok(AudioResponse::Status(status)) => {
                                                 if status.contains("Listening") {
                                                     println!(
                                                         "...Audio monitor is Listening. Sending START."
                                                     );
                                                     let cmd = AudioCommand::Start(path.clone());
-                                                    match send_audio_command(&cmd).await {
+                                                    match send_audio_command(&socket_path, &cmd)
+                                                        .await
+                                                    {
                                                         Ok(AudioResponse::Ok) => {
                                                             active_recording_key = Some(key);
                                                             device
@@ -358,13 +381,11 @@ async fn main() {
                                 }
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
-                                if key == device.kind().key_count() - 1 {
-                                    println!("Exit button pressed. Shutting down.");
-                                    break 'infinite;
-                                }
                                 if active_recording_key == Some(key) {
                                     println!("Button {} up, (was recording), sending STOP", key);
-                                    match send_audio_command(&AudioCommand::Stop).await {
+                                    match send_audio_command(&socket_path, &AudioCommand::Stop)
+                                        .await
+                                    {
                                         Ok(AudioResponse::Ok) => {
                                             active_recording_key = None;
                                             device
@@ -446,8 +467,18 @@ async fn main() {
         Err(e) => eprintln!("Failed to create HidApi instance: {}", e),
     }
     println!("Main function exiting. Ensuring server is killed.");
-    // TODO: The server process is now owned by the monitor task,
-    // so we can't kill it here. We should send a shutdown signal.
-    // For now, we'll just let the OS clean it up when main exits.
-    // A better solution would be a tokio::sync::watch channel to signal shutdown.
+    if let Err(e) = shutdown_tx.send(()) {
+        eprintln!("Failed to send shutdown signal: {}", e);
+    }
+
+    // Clean up the socket file
+    if let Err(e) = fs::remove_file(&socket_path) {
+        if e.kind() != io::ErrorKind::NotFound {
+            eprintln!(
+                "Failed to remove socket file {}: {}",
+                socket_path.display(),
+                e
+            );
+        }
+    }
 }

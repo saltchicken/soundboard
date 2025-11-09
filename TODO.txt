@@ -1,0 +1,20 @@
+Fix inefficient Audio Buffering
+Use the bytemuck crate for a zero-cost, safe cast from &[u8] to &[f32].
+
+
+Use toml and serde to read a configuration file at startup.
+
+Remove panics
+
+
+
+
+
+Monitor the Server Process
+
+Right now, if pipewire_source crashes, main.rs will continue running, but all recording attempts will fail.
+
+Recommendation: Spawn a task in main.rs to monitor the server's child process.
+
+
+Use Constants for Magic Numbers
