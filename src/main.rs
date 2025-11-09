@@ -407,15 +407,15 @@ async fn main() {
                                 match mode {
                                     Mode::Playback => {
                                         // In Playback mode, just show a "pressed" state
-                                        if let Some(path) = button_files.get(&key) {
-                                            if path.exists() {
-                                                // Set to 'rec_on' as a "pressed" state
-                                                device
-                                                    .set_button_image(key, img_rec_on.clone())
-                                                    .await
-                                                    .unwrap();
-                                                device.flush().await.unwrap();
-                                            }
+                                        if let Some(path) = button_files.get(&key)
+                                            && path.exists()
+                                        {
+                                            // Set to 'rec_on' as a "pressed" state
+                                            device
+                                                .set_button_image(key, img_rec_on.clone())
+                                                .await
+                                                .unwrap();
+                                            device.flush().await.unwrap();
                                         }
                                     }
                                     Mode::Edit => {
@@ -506,32 +506,31 @@ async fn main() {
                                 match mode {
                                     Mode::Playback => {
                                         // In Playback mode, ButtonUp triggers playback
-                                        if let Some(path) = button_files.get(&key) {
-                                            if path.exists() {
-                                                println!(
-                                                    "Button {} up (Playback Mode). Triggering playback.",
-                                                    key
-                                                );
+                                        if let Some(path) = button_files.get(&key)
+                                            && path.exists()
+                                        {
+                                            println!(
+                                                "Button {} up (Playback Mode). Triggering playback.",
+                                                key
+                                            );
 
-                                                // Spawn playback in a new task
-                                                let path_clone = path.clone();
-                                                let sink_clone = playback_sink;
-                                                tokio::spawn(async move {
-                                                    if let Err(e) =
-                                                        play_audio_file(&path_clone, sink_clone)
-                                                            .await
-                                                    {
-                                                        eprintln!("Playback failed: {}", e);
-                                                    }
-                                                });
+                                            // Spawn playback in a new task
+                                            let path_clone = path.clone();
+                                            let sink_clone = playback_sink;
+                                            tokio::spawn(async move {
+                                                if let Err(e) =
+                                                    play_audio_file(&path_clone, sink_clone).await
+                                                {
+                                                    eprintln!("Playback failed: {}", e);
+                                                }
+                                            });
 
-                                                // Set image back to "play"
-                                                device
-                                                    .set_button_image(key, img_play.clone())
-                                                    .await
-                                                    .unwrap();
-                                                device.flush().await.unwrap();
-                                            }
+                                            // Set image back to "play"
+                                            device
+                                                .set_button_image(key, img_play.clone())
+                                                .await
+                                                .unwrap();
+                                            device.flush().await.unwrap();
                                         }
                                     }
                                     Mode::Edit => {
@@ -608,14 +607,14 @@ async fn main() {
                                                 }
                                             } else {
                                                 println!("...Hold < 2s. (Edit Mode) No action.");
-                                                if let Some(path) = button_files.get(&key) {
-                                                    if path.exists() {
-                                                        // Set image back to "play"
-                                                        device
-                                                            .set_button_image(key, img_play.clone())
-                                                            .await
-                                                            .unwrap();
-                                                    }
+                                                if let Some(path) = button_files.get(&key)
+                                                    && path.exists()
+                                                {
+                                                    // Set image back to "play"
+                                                    device
+                                                        .set_button_image(key, img_play.clone())
+                                                        .await
+                                                        .unwrap();
                                                 }
                                             }
                                             device.flush().await.unwrap();
@@ -640,13 +639,13 @@ async fn main() {
         eprintln!("Failed to send shutdown signal: {}", e);
     }
     // Clean up the socket file
-    if let Err(e) = fs::remove_file(&socket_path) {
-        if e.kind() != io::ErrorKind::NotFound {
-            eprintln!(
-                "Failed to remove socket file {}: {}",
-                socket_path.display(),
-                e
-            );
-        }
+    if let Err(e) = fs::remove_file(&socket_path)
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "Failed to remove socket file {}: {}",
+            socket_path.display(),
+            e
+        );
     }
 }
