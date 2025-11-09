@@ -165,12 +165,13 @@ async fn main() {
         return; // Exit
     }
     let img_rec_off =
-        open("src/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
+        open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
-        open("src/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
-    let img_play = open("src/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
-    let img_lcd_strip =
-        open("src/lcd_strip.png").unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20])));
+        open("assets/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
+    let img_play =
+        open("assets/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
+    let img_lcd_strip = open("assets/lcd_strip.png")
+        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20])));
 
     match new_hidapi() {
         Ok(hid) => {
