@@ -1,14 +1,14 @@
-// ‼️ src/main.rs (CORRECTED)
+
 use soundboard::{
     AudioCommand,
-    get_audio_storage_path, // ‼️ Removed all socket/server code
+    get_audio_storage_path,
 };
 mod audio_player;
 use crate::audio_player::{PlaybackSink, play_audio_file};
 mod lcd;
 use crate::lcd::{create_fallback_image, create_fallback_lcd_image, update_lcd_mode};
 mod audio_processor;
-// ‼️ This new module holds the audio capture logic
+
 mod audio_capture;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
 use image::open;
@@ -37,7 +37,7 @@ struct AppState {
     img_play: DynamicImage,
     img_lcd_playback: DynamicImage,
     img_lcd_edit: DynamicImage,
-    // ‼️ Store the sender half of the audio channel
+
     audio_cmd_tx: mpsc::Sender<AudioCommand>,
 }
 
@@ -125,7 +125,7 @@ impl AppState {
                         key_to_delete
                     );
                     if let Some(path) = self.button_files.get(&key_to_delete) {
-                        // ‼️ Use tokio_fs for non-blocking I/O
+
                         match tokio_fs::remove_file(path).await {
                             Ok(_) => {
                                 println!("...File {} deleted.", path.display());
@@ -156,7 +156,7 @@ impl AppState {
         }
     }
 
-    // ‼️ Simplified logic: just send a command. No .await, no response.
+
     async fn handle_button_down(&mut self, key: u8, device: &AsyncStreamDeck) {
         match self.mode {
             Mode::Playback => {
@@ -172,14 +172,14 @@ impl AppState {
                             "Button {} down (Playback Mode, no file). Sending START.",
                             key
                         );
-                        // ‼️ Send the START command via the channel.
+
                         // This is a sync send, but it's non-blocking (just
                         // drops the command in a queue) so it's fine in async.
                         let cmd = AudioCommand::Start(path.clone());
                         if let Err(e) = self.audio_cmd_tx.send(cmd) {
                             eprintln!("Failed to send START command: {}", e);
                         } else {
-                            // ‼️ Optimistically update state.
+
                             // The audio thread will handle logic.
                             self.active_recording_key = Some(key);
                             device
@@ -243,7 +243,7 @@ impl AppState {
         }
     }
 
-    // ‼️ Simplified logic: just send a command.
+
     async fn handle_button_up(&mut self, key: u8, device: &AsyncStreamDeck) {
         match self.mode {
             Mode::Playback => {
@@ -252,13 +252,13 @@ impl AppState {
                         "Button {} up (Playback Mode, was recording), sending STOP",
                         key
                     );
-                    // ‼️ Send the STOP command
+
                     if let Err(e) = self.audio_cmd_tx.send(AudioCommand::Stop) {
                         eprintln!("Failed to send STOP command: {}", e);
                     } else {
                         println!("...STOP sent.");
                     }
-                    // ‼️ We assume success and update UI immediately.
+
                     self.active_recording_key = None;
                     device
                         .set_button_image(key, self.img_play.clone())
@@ -268,13 +268,13 @@ impl AppState {
                 } else if let Some(path) = self.button_files.get(&key) {
                     if path.exists() {
                         println!("Button {} up (Playback Mode). Triggering playback.", key);
-                        // ‼️ Get pitch shift value for this key
+
                         let pitch_shift =
                             self.pitch_shift_semitones.get(&key).cloned().unwrap_or(0.0);
                         let path_clone = path.clone();
                         let sink_clone = self.playback_sink;
                         let volume_clone = self.playback_volume.get(&key).cloned().unwrap_or(1.0);
-                        // ‼️ Spawn a new task to handle playback
+
                         // This task will create a temp file if needed, play it,
                         // and then clean up the temp file.
                         tokio::spawn(async move {
@@ -283,12 +283,12 @@ impl AppState {
                             // We use an epsilon (0.01) to avoid floating point issues
                             let path_to_play = if pitch_shift.abs() > 0.01 {
                                 println!("...Applying pitch shift: {:.2} semitones", pitch_shift);
-                                // ‼️ Create a *new* clone just for the blocking task
+
                                 let path_for_blocking = path_clone.clone();
                                 // 2. Run the synchronous file I/O in a blocking thread
                                 // This prevents blocking the main async runtime
                                 match tokio::task::spawn_blocking(move || {
-                                    // ‼️ Use the new clone here
+
                                     audio_processor::create_pitched_copy_sync(
                                         &path_for_blocking,
                                         pitch_shift,
@@ -307,7 +307,7 @@ impl AppState {
                                             "Failed to create pitched copy: {}. Playing original.",
                                             e
                                         );
-                                        // ‼️ This use of path_clone is now valid
+
                                         path_clone
                                     }
                                     Err(e) => {
@@ -316,7 +316,7 @@ impl AppState {
                                             "Task join error for pitched copy: {}. Playing original.",
                                             e
                                         );
-                                        // ‼️ This use of path_clone is now valid
+
                                         path_clone
                                     }
                                 }
@@ -361,7 +361,7 @@ impl AppState {
 
 #[tokio::main]
 async fn main() {
-    // ‼️ No socket_path needed
+
     let audio_storage_path = match get_audio_storage_path() {
         Ok(path) => path,
         Err(e) => {
@@ -370,10 +370,10 @@ async fn main() {
         }
     };
 
-    // ‼️ Create the in-memory channel
+
     let (audio_tx, audio_rx) = mpsc::channel();
 
-    // ‼️ Spawn the audio capture logic in a new, dedicated thread
+
     // This thread will block on the pipewire mainloop, which is perfect.
     std::thread::spawn(move || {
         println!("Audio capture thread started...");
@@ -384,7 +384,7 @@ async fn main() {
         }
     });
 
-    // ‼️ All server process management code is GONE.
+
     // No `start_pipewire_source`, `wait_for_server`, `shutdown_tx`,
     // or `server_process.wait()` task.
 
@@ -426,7 +426,7 @@ async fn main() {
                     img_play: img_play.clone(),
                     img_lcd_playback: img_lcd_playback.clone(),
                     img_lcd_edit: img_lcd_edit.clone(),
-                    // ‼️ Give the AppState the sender
+
                     audio_cmd_tx: audio_tx.clone(),
                 };
 
@@ -473,11 +473,11 @@ async fn main() {
                                 app_state.handle_encoder_down(dial, &device).await;
                             }
                             DeviceStateUpdate::ButtonDown(key) => {
-                                // ‼️ Pass reference to AppState
+
                                 app_state.handle_button_down(key, &device).await;
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
-                                // ‼️ Pass reference to AppState
+
                                 app_state.handle_button_up(key, &device).await;
                             }
                             _ => {}
@@ -494,9 +494,8 @@ async fn main() {
     }
 
     println!("Main function exiting. Audio thread will exit when sender is dropped.");
-    // ‼️ No shutdown_tx or socket cleanup needed.
+
     // When `audio_tx` (inside `app_state`) is dropped here,
     // the `rx.recv()` loop in `handle_audio_commands` will
     // end, and the audio thread will clean itself up.
 }
-
