@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 //
 const SOCKET_PATH: &str = "/tmp/rust-audio-monitor.sock";
+const SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 // const PLAYBACK_SINK_NAME: Option<&str> = Some("MyMixer");
 const PLAYBACK_SINK_NAME: Option<&str> = None;
 
@@ -94,43 +96,73 @@ fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
             return Err(e);
         }
     };
-
     // 2. Get the directory (e.g., /path/to/project/target/debug/)
     server_exe_path.pop();
-
     // 3. Append the name of the *other* binary
     //    (On Windows, you'd need to add ".exe" here)
     server_exe_path.push("pipewire_source");
-
     println!(
         "Attempting to spawn server at: {}",
         server_exe_path.display()
     );
-
     // 4. Spawn the pipewire_source binary as a child process
     let server_process: Child = Command::new(&server_exe_path)
         .stdout(Stdio::null()) // Silences the server's stdout
         .stderr(Stdio::null()) // Silences the server's stderr
         .spawn()
         .expect("Failed to spawn pipewire_source server. Did you `cargo build` first?");
-
     let server_pid = server_process.id().unwrap_or(0);
     println!(
         "Spawned server process (PID: {}). Waiting for it to initialize...",
         server_pid
     );
-
     Ok(server_process)
+}
+
+// ‼️ New helper function to wait for the socket
+async fn wait_for_server() -> io::Result<()> {
+    let start = tokio::time::Instant::now(); // Use tokio's Instant
+    println!("Waiting for server socket at {}...", SOCKET_PATH);
+
+    loop {
+        // Check for timeout
+        if start.elapsed() > SERVER_START_TIMEOUT {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Server failed to start within timeout.",
+            ));
+        }
+
+        // Try to connect
+        match UnixStream::connect(SOCKET_PATH).await {
+            Ok(_) => {
+                // Connection successful, socket exists.
+                println!("...Server socket found!");
+                return Ok(()); // Success
+            }
+            Err(_) => {
+                // Socket not ready, wait and retry.
+            }
+        }
+
+        // Wait before retrying
+        tokio::time::sleep(SERVER_RETRY_INTERVAL).await; // Use tokio's sleep
+    }
 }
 
 #[tokio::main]
 async fn main() {
     let mut server_process = start_pipewire_source().unwrap();
 
-    // TODO: Give the server a moment to start and create the socket.
-    // A more robust way is a retry-loop on connect, but this is simpler.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+    if let Err(e) = wait_for_server().await {
+        eprintln!(
+            "Failed to connect to pipewire_source server: {}. Is it already running?",
+            e
+        );
+        eprintln!("Ensure '{SOCKET_PATH}' is writable and the server can start.");
+        let _ = server_process.kill().await; // Kill the child process
+        return; // Exit
+    }
     let img_rec_off =
         open("src/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
