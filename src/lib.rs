@@ -1,7 +1,5 @@
-use dirs;
 use serde::{Deserialize, Serialize};
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum AudioCommand {

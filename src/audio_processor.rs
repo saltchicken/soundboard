@@ -1,5 +1,3 @@
-// ‼️ src/audio_processor.rs (MODIFIED)
-
 use hound::{WavReader, WavSpec, WavWriter};
 use std::env;
 use std::io;
@@ -17,15 +15,15 @@ pub fn create_pitched_copy_sync(original_path: &Path, semitone_shift: f64) -> io
     let pitch_ratio = 2.0_f64.powf(semitone_shift / 12.0);
 
     // 2. Open the original file
-    // ‼️ Map hound::Error to io::Error
-    let mut reader = WavReader::open(original_path).map_err(|e| io::Error::other(e))?;
+
+    let mut reader = WavReader::open(original_path).map_err(io::Error::other)?;
     let in_spec = reader.spec();
 
     // 3. Calculate the new spec with the modified sample rate
     let new_sample_rate = (in_spec.sample_rate as f64 * pitch_ratio).round() as u32;
     let out_spec = WavSpec {
         channels: in_spec.channels,
-        sample_rate: new_sample_rate, // ‼️ The only change
+        sample_rate: new_sample_rate,
         bits_per_sample: in_spec.bits_per_sample,
         sample_format: in_spec.sample_format,
     };
@@ -33,50 +31,45 @@ pub fn create_pitched_copy_sync(original_path: &Path, semitone_shift: f64) -> io
     // 4. Create a unique path for the temporary file
     let unique_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| io::Error::other(e))?
+        .map_err(io::Error::other)?
         .as_micros();
     let temp_file_path = env::temp_dir().join(format!("pitched_sample_{}.wav", unique_id));
 
     // 5. Create the writer for the new temp file
-    // ‼️ Map hound::Error to io::Error
-    let mut writer =
-        WavWriter::create(&temp_file_path, out_spec).map_err(|e| io::Error::other(e))?;
+
+    let mut writer = WavWriter::create(&temp_file_path, out_spec).map_err(io::Error::other)?;
 
     // 6. Copy samples, handling the different possible WAV formats
     //    We must match the format we are reading.
     match (in_spec.sample_format, in_spec.bits_per_sample) {
         (hound::SampleFormat::Int, 16) => {
             for sample in reader.samples::<i16>() {
-                // ‼️ Map both inner and outer errors
                 writer
-                    .write_sample(sample.map_err(|e| io::Error::other(e))?)
-                    .map_err(|e| io::Error::other(e))?;
+                    .write_sample(sample.map_err(io::Error::other)?)
+                    .map_err(io::Error::other)?;
             }
         }
         (hound::SampleFormat::Int, 32) => {
             for sample in reader.samples::<i32>() {
-                // ‼️ Map both inner and outer errors
                 writer
-                    .write_sample(sample.map_err(|e| io::Error::other(e))?)
-                    .map_err(|e| io::Error::other(e))?;
+                    .write_sample(sample.map_err(io::Error::other)?)
+                    .map_err(io::Error::other)?;
             }
         }
         (hound::SampleFormat::Float, 32) => {
             // This is the format our pipewire_source creates
             for sample in reader.samples::<f32>() {
-                // ‼️ Map both inner and outer errors
                 writer
-                    .write_sample(sample.map_err(|e| io::Error::other(e))?)
-                    .map_err(|e| io::Error::other(e))?;
+                    .write_sample(sample.map_err(io::Error::other)?)
+                    .map_err(io::Error::other)?;
             }
         }
         (hound::SampleFormat::Int, 24) => {
             // hound reads 24-bit samples as i32
             for sample in reader.samples::<i32>() {
-                // ‼️ Map both inner and outer errors
                 writer
-                    .write_sample(sample.map_err(|e| io::Error::other(e))?)
-                    .map_err(|e| io::Error::other(e))?;
+                    .write_sample(sample.map_err(io::Error::other)?)
+                    .map_err(io::Error::other)?;
             }
         }
         _ => {
@@ -89,7 +82,8 @@ pub fn create_pitched_copy_sync(original_path: &Path, semitone_shift: f64) -> io
     }
 
     // 7. Finalize the file and return the path
-    // ‼️ Map hound::Error to io::Error
-    writer.finalize().map_err(|e| io::Error::other(e))?;
+
+    writer.finalize().map_err(io::Error::other)?;
     Ok(temp_file_path)
 }
+

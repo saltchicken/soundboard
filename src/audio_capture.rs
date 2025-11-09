@@ -1,5 +1,5 @@
 // This file contains the logic from the old src/bin/pipewire_source.rs
-use crate::AudioCommand; // ‼️ Use command from lib
+use crate::AudioCommand;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     Mutex,
-    mpsc::Receiver, // ‼️ Import the synchronous MPSC receiver
+    mpsc::Receiver,
 };
 use std::thread;
 
@@ -77,7 +77,7 @@ fn save_recording_from_buffer(
     }
 }
 
-/// ‼️ This function replaces the Unix socket listener.
+
 /// It runs in a separate thread and blocks on the MPSC channel.
 fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>) {
     // This loop blocks on `rx.recv()`, waiting for commands from the main thread.
@@ -99,7 +99,7 @@ fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>)
                                 user_data.buffer.clear();
                             }
                             State::Recording(_) => {
-                                // ‼️ This is now robust: just ignore duplicate Start
+
                                 eprintln!("Refused START: Already recording.");
                             }
                         }
@@ -115,7 +115,7 @@ fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>)
                     } else {
                         eprintln!("Refused STOP: Not recording.");
                     }
-                } // ‼️ AudioCommand::Status is gone, not needed.
+                }
             }
         }
         // Save data *outside* the mutex lock
@@ -126,7 +126,7 @@ fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>)
     println!("Audio command channel closed. Exiting command loop.");
 }
 
-/// ‼️ This is the main entry point for the audio capture thread.
+
 pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -233,13 +233,13 @@ pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
     )?;
     // --- End of Stream Setup ---
 
-    // ‼️ Spawn the command-handling thread
+
     let ipc_data = data.clone();
     thread::spawn(move || {
         handle_audio_commands(rx, ipc_data);
     });
 
-    // ‼️ Run the mainloop (this blocks the current thread, as intended)
+
     mainloop.run();
     Ok(())
 }
