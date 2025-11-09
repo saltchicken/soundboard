@@ -326,9 +326,9 @@ async fn main() {
         open("assets/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
 
     let img_lcd_playback = open("assets/lcd_strip.png")
-        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20])));
+        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([10, 50, 10])));
     let img_lcd_edit = open("assets/lcd_edit.png")
-        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([200, 20, 20])));
+        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([50, 10, 10])));
     match new_hidapi() {
         Ok(hid) => {
             for (kind, serial) in list_devices(&hid) {
