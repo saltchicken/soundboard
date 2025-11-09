@@ -1,0 +1,10 @@
+[Unit]
+Description=My Stream Deck Application
+
+[Service]
+ExecStart=/home/saltchicken/.cargo/bin/rust-streamdeck
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
