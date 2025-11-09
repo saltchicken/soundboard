@@ -154,24 +154,24 @@ async fn main() {
                                     };
                                     println!("Mode switched to: {:?}", mode);
 
-                                    if mode == Mode::Playback {
-                                        if let Some(selected_key) = selected_for_delete.take() {
-                                            println!(
-                                                "Mode switched away from Edit. Deselecting key {}.",
-                                                selected_key
-                                            );
-                                            // Reset the button's image
-                                            if let Some(path) = button_files.get(&selected_key) {
-                                                let img = if path.exists() {
-                                                    img_play.clone()
-                                                } else {
-                                                    img_rec_off.clone()
-                                                };
-                                                device
-                                                    .set_button_image(selected_key, img)
-                                                    .await
-                                                    .unwrap();
-                                            }
+                                    if mode == Mode::Playback
+                                        && let Some(selected_key) = selected_for_delete.take()
+                                    {
+                                        println!(
+                                            "Mode switched away from Edit. Deselecting key {}.",
+                                            selected_key
+                                        );
+                                        // Reset the button's image
+                                        if let Some(path) = button_files.get(&selected_key) {
+                                            let img = if path.exists() {
+                                                img_play.clone()
+                                            } else {
+                                                img_rec_off.clone()
+                                            };
+                                            device
+                                                .set_button_image(selected_key, img)
+                                                .await
+                                                .unwrap();
                                         }
                                     }
 
@@ -422,32 +422,29 @@ async fn main() {
                                                 }
                                             }
                                             device.flush().await.unwrap();
-                                        } else {
-                                            if let Some(path) = button_files.get(&key)
-                                                && path.exists()
-                                            {
-                                                println!(
-                                                    "Button {} up (Playback Mode). Triggering playback.",
-                                                    key
-                                                );
-                                                // Spawn playback in a new task
-                                                let path_clone = path.clone();
-                                                let sink_clone = playback_sink;
-                                                tokio::spawn(async move {
-                                                    if let Err(e) =
-                                                        play_audio_file(&path_clone, sink_clone)
-                                                            .await
-                                                    {
-                                                        eprintln!("Playback failed: {}", e);
-                                                    }
-                                                });
-                                                // Set image back to "play"
-                                                device
-                                                    .set_button_image(key, img_play.clone())
-                                                    .await
-                                                    .unwrap();
-                                                device.flush().await.unwrap();
-                                            }
+                                        } else if let Some(path) = button_files.get(&key)
+                                            && path.exists()
+                                        {
+                                            println!(
+                                                "Button {} up (Playback Mode). Triggering playback.",
+                                                key
+                                            );
+                                            // Spawn playback in a new task
+                                            let path_clone = path.clone();
+                                            let sink_clone = playback_sink;
+                                            tokio::spawn(async move {
+                                                if let Err(e) =
+                                                    play_audio_file(&path_clone, sink_clone).await
+                                                {
+                                                    eprintln!("Playback failed: {}", e);
+                                                }
+                                            });
+                                            // Set image back to "play"
+                                            device
+                                                .set_button_image(key, img_play.clone())
+                                                .await
+                                                .unwrap();
+                                            device.flush().await.unwrap();
                                         }
                                     }
 
