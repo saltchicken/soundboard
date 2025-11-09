@@ -1,8 +1,4 @@
-
-use soundboard::{
-    AudioCommand,
-    get_audio_storage_path,
-};
+use soundboard::{AudioCommand, get_audio_storage_path};
 mod audio_player;
 use crate::audio_player::{PlaybackSink, play_audio_file};
 mod lcd;
@@ -125,7 +121,6 @@ impl AppState {
                         key_to_delete
                     );
                     if let Some(path) = self.button_files.get(&key_to_delete) {
-
                         match tokio_fs::remove_file(path).await {
                             Ok(_) => {
                                 println!("...File {} deleted.", path.display());
@@ -156,7 +151,6 @@ impl AppState {
         }
     }
 
-
     async fn handle_button_down(&mut self, key: u8, device: &AsyncStreamDeck) {
         match self.mode {
             Mode::Playback => {
@@ -179,7 +173,6 @@ impl AppState {
                         if let Err(e) = self.audio_cmd_tx.send(cmd) {
                             eprintln!("Failed to send START command: {}", e);
                         } else {
-
                             // The audio thread will handle logic.
                             self.active_recording_key = Some(key);
                             device
@@ -243,7 +236,6 @@ impl AppState {
         }
     }
 
-
     async fn handle_button_up(&mut self, key: u8, device: &AsyncStreamDeck) {
         match self.mode {
             Mode::Playback => {
@@ -288,7 +280,6 @@ impl AppState {
                                 // 2. Run the synchronous file I/O in a blocking thread
                                 // This prevents blocking the main async runtime
                                 match tokio::task::spawn_blocking(move || {
-
                                     audio_processor::create_pitched_copy_sync(
                                         &path_for_blocking,
                                         pitch_shift,
@@ -361,7 +352,6 @@ impl AppState {
 
 #[tokio::main]
 async fn main() {
-
     let audio_storage_path = match get_audio_storage_path() {
         Ok(path) => path,
         Err(e) => {
@@ -370,9 +360,7 @@ async fn main() {
         }
     };
 
-
     let (audio_tx, audio_rx) = mpsc::channel();
-
 
     // This thread will block on the pipewire mainloop, which is perfect.
     std::thread::spawn(move || {
@@ -383,10 +371,6 @@ async fn main() {
             println!("Audio capture thread exited cleanly.");
         }
     });
-
-
-    // No `start_pipewire_source`, `wait_for_server`, `shutdown_tx`,
-    // or `server_process.wait()` task.
 
     let img_rec_off =
         open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
@@ -473,11 +457,9 @@ async fn main() {
                                 app_state.handle_encoder_down(dial, &device).await;
                             }
                             DeviceStateUpdate::ButtonDown(key) => {
-
                                 app_state.handle_button_down(key, &device).await;
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
-
                                 app_state.handle_button_up(key, &device).await;
                             }
                             _ => {}
