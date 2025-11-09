@@ -18,8 +18,7 @@ use tokio::sync::watch;
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-// const PLAYBACK_SINK_NAME: Option<&str> = Some("MyMixer");
-const PLAYBACK_SINK_NAME: Option<&str> = None;
+// ‼️ Removed const PLAYBACK_SINK_NAME
 const DELETE_HOLD_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -28,7 +27,8 @@ enum Mode {
     Edit,
 }
 
-async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
+async fn play_audio_file(path: &PathBuf, sink_name: Option<&str>) -> io::Result<()> {
+    // ‼️ Added sink_name argument
     let player = "pw-play";
     println!(
         "Attempting to play file with '{}': {}",
@@ -37,7 +37,8 @@ async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
     );
     // Create the command
     let mut cmd = Command::new(player);
-    if let Some(sink_name) = PLAYBACK_SINK_NAME {
+    if let Some(sink_name) = sink_name {
+        // ‼️ Use the function argument
         cmd.arg("--target");
         cmd.arg(sink_name);
         println!("...routing playback to sink: {}", sink_name);
@@ -142,7 +143,6 @@ async fn update_lcd_mode(
         Mode::Playback => img_playback, // ‼️
         Mode::Edit => img_edit,         // ‼️
     }; // ‼️
-
     if let Some(format) = device.kind().lcd_image_format() {
         // ‼️
         let scaled_image = img_to_use.clone().resize_to_fill(
@@ -285,21 +285,18 @@ async fn main() {
             }
         }
     });
-
     let img_rec_off =
         open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
         open("assets/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
     let img_play =
         open("assets/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
-
     // ‼️ Load mode-specific LCD images
     let img_lcd_playback =
         open("assets/lcd_strip.png") // ‼️ Use existing asset
             .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20]))); // ‼️ Green fallback
     let img_lcd_edit = open("assets/lcd_edit.png") // ‼️ New asset for edit mode
         .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([200, 20, 20]))); // ‼️ Red fallback
-
     match new_hidapi() {
         Ok(hid) => {
             for (kind, serial) in list_devices(&hid) {
@@ -313,12 +310,12 @@ async fn main() {
                     AsyncStreamDeck::connect(&hid, kind, &serial).expect("Failed to connect");
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
-
                 // ‼️ Initialize state and set initial LCD
                 let mut mode = Mode::Playback; // ‼️
+                let mut playback_sink_name: Option<&'static str> = None; // ‼️ Added mutable sink state
                 println!("Starting in {:?} mode.", mode); // ‼️
+                println!("Playback sink set to: Default"); // ‼️ Added initial sink status
                 update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await; // ‼️
-
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
                     let file_name = format!("recording_{}.wav", (b'A' + i) as char);
@@ -352,7 +349,6 @@ async fn main() {
                                         Mode::Edit => Mode::Playback,
                                     };
                                     println!("Mode switched to: {:?}", mode);
-
                                     // Update the LCD strip to reflect the new mode
                                     update_lcd_mode(
                                         &device,
@@ -364,7 +360,25 @@ async fn main() {
                                     device.flush().await.unwrap();
                                 }
                             }
-
+                            DeviceStateUpdate::EncoderDown(dial) => {
+                                // ‼️
+                                if dial == 0 {
+                                    // ‼️ Assuming dial 0 for the press
+                                    playback_sink_name = match playback_sink_name {
+                                        // ‼️
+                                        Some(_) => {
+                                            // ‼️
+                                            println!("Playback sink set to: Default"); // ‼️
+                                            None // ‼️
+                                        } // ‼️
+                                        None => {
+                                            // ‼️
+                                            println!("Playback sink set to: MyMixer"); // ‼️
+                                            Some("MyMixer") // ‼️
+                                        } // ‼️
+                                    }; // ‼️
+                                } // ‼️
+                            } // ‼️
                             DeviceStateUpdate::ButtonDown(key) => {
                                 match mode {
                                     Mode::Playback => {
@@ -482,11 +496,16 @@ async fn main() {
                                                 ); // ‼️
 
                                                 // Spawn playback in a new task
-                                                let path_clone = path.clone(); // ‼️
+                                                let path_clone = path.clone();
                                                 tokio::spawn(async move {
                                                     // ‼️
-                                                    if let Err(e) =
-                                                        play_audio_file(&path_clone).await
+                                                    if let Err(e) = // ‼️
+                                                        play_audio_file(
+                                                            &path_clone,
+                                                            playback_sink_name,
+                                                        )
+                                                        .await
+                                                    // ‼️ Pass sink state
                                                     {
                                                         // ‼️
                                                         eprintln!("Playback failed: {}", e); // ‼️
@@ -607,7 +626,6 @@ async fn main() {
         }
         Err(e) => eprintln!("Failed to create HidApi instance: {}", e),
     }
-
     println!("Main function exiting. Ensuring server is killed.");
     if let Err(e) = shutdown_tx.send(()) {
         eprintln!("Failed to send shutdown signal: {}", e);
