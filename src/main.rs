@@ -20,7 +20,7 @@ const SERVER_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const PLAYBACK_SINK_NAME: Option<&str> = None;
 
 async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
-    let player = "pw-play"; // ‼️ Assumes pw-play is in your PATH
+    let player = "pw-play";
     println!(
         "Attempting to play file with '{}': {}",
         player,
@@ -52,11 +52,10 @@ async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
             player, status
         );
         eprintln!("{}", msg);
-        Err(io::Error::new(io::ErrorKind::Other, msg))
+        Err(io::Error::other(msg))
     }
 }
 
-// ... (send_audio_command function is unchanged) ...
 async fn send_audio_command(command: &str) -> io::Result<String> {
     let stream = match UnixStream::connect(SOCKET_PATH).await {
         Ok(stream) => stream,
@@ -70,11 +69,11 @@ async fn send_audio_command(command: &str) -> io::Result<String> {
     let cmd_with_newline = format!("{}\n", command);
     if let Err(e) = writer.write_all(cmd_with_newline.as_bytes()).await {
         eprintln!("Failed to write command: {}", e);
-        return Err(e.into());
+        return Err(e);
     }
     if let Err(e) = writer.shutdown().await {
         eprintln!("Failed to shutdown writer: {}", e);
-        return Err(e.into());
+        return Err(e);
     }
     let mut response = String::new();
     let mut buf_reader = BufReader::new(reader);
@@ -82,7 +81,6 @@ async fn send_audio_command(command: &str) -> io::Result<String> {
     Ok(response.trim().to_string())
 }
 
-// ... (create_fallback_image function is unchanged) ...
 fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(72, 72, move |_, _| color))
 }
@@ -96,16 +94,14 @@ fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
             return Err(e);
         }
     };
-    // 2. Get the directory (e.g., /path/to/project/target/debug/)
+
     server_exe_path.pop();
-    // 3. Append the name of the *other* binary
-    //    (On Windows, you'd need to add ".exe" here)
     server_exe_path.push("pipewire_source");
     println!(
         "Attempting to spawn server at: {}",
         server_exe_path.display()
     );
-    // 4. Spawn the pipewire_source binary as a child process
+
     let server_process: Child = Command::new(&server_exe_path)
         .stdout(Stdio::null()) // Silences the server's stdout
         .stderr(Stdio::null()) // Silences the server's stderr
@@ -119,9 +115,8 @@ fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
     Ok(server_process)
 }
 
-// ‼️ New helper function to wait for the socket
 async fn wait_for_server() -> io::Result<()> {
-    let start = tokio::time::Instant::now(); // Use tokio's Instant
+    let start = tokio::time::Instant::now();
     println!("Waiting for server socket at {}...", SOCKET_PATH);
 
     loop {
@@ -146,7 +141,7 @@ async fn wait_for_server() -> io::Result<()> {
         }
 
         // Wait before retrying
-        tokio::time::sleep(SERVER_RETRY_INTERVAL).await; // Use tokio's sleep
+        tokio::time::sleep(SERVER_RETRY_INTERVAL).await;
     }
 }
 
@@ -172,7 +167,6 @@ async fn main() {
     match new_hidapi() {
         Ok(hid) => {
             for (kind, serial) in list_devices(&hid) {
-                // ... (device setup and button mapping is unchanged) ...
                 println!(
                     "Found Stream Deck: {:?} {} {}",
                     kind,
@@ -187,7 +181,6 @@ async fn main() {
 
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
-                    // This will create files like /tmp/recording_A.wav, /tmp/recording_B.wav, ... /tmp/recording_H.wav
                     let file_name = format!("/tmp/recording_{}.wav", (b'A' + i) as char);
                     button_files.insert(i, PathBuf::from(file_name));
                 }
@@ -214,7 +207,6 @@ async fn main() {
 
                     for update in updates {
                         match update {
-                            // ... (ButtonDown logic is unchanged) ...
                             DeviceStateUpdate::ButtonDown(key) => {
                                 if let Some(path) = button_files.get(&key) {
                                     if path.exists() {
@@ -279,7 +271,6 @@ async fn main() {
                                     break 'infinite;
                                 }
 
-                                // (Check 1: active_recording_key... unchanged)
                                 if active_recording_key == Some(key) {
                                     println!("Button {} up, (was recording), sending STOP", key);
                                     match send_audio_command("STOP").await {
@@ -296,8 +287,6 @@ async fn main() {
                                         }
                                     }
                                     device.flush().await.unwrap();
-
-                                // (Check 2: pending_delete... MODIFIED)
                                 } else if let Some(start_time) = pending_delete.remove(&key) {
                                     let hold_duration = start_time.elapsed();
                                     println!(
@@ -307,7 +296,6 @@ async fn main() {
 
                                     if hold_duration >= Duration::from_secs(2) {
                                         // Held for > 2s: Delete the file
-                                        // (This delete logic is unchanged)
                                         if let Some(path) = button_files.get(&key) {
                                             match fs::remove_file(path) {
                                                 Ok(_) => {
@@ -331,11 +319,11 @@ async fn main() {
                                             }
                                         }
                                     } else {
-                                        // ‼️ Held for < 2s: Play the file
+                                        // Held for < 2s: Play the file
                                         println!("...Hold < 2s. Triggering playback.");
                                         if let Some(path) = button_files.get(&key) {
-                                            // ‼️ Spawn playback in a new task
-                                            // ‼️ so it doesn't block our event loop
+                                            // Spawn playback in a new task
+                                            // so it doesn't block our event loop
                                             let path_clone = path.clone();
                                             tokio::spawn(async move {
                                                 if let Err(e) = play_audio_file(&path_clone).await {
@@ -343,7 +331,7 @@ async fn main() {
                                                 }
                                             });
                                         }
-                                        // ‼️ Set image back to "play"
+                                        // Set image back to "play"
                                         device
                                             .set_button_image(key, img_play.clone())
                                             .await
@@ -357,7 +345,6 @@ async fn main() {
                     }
                 }
                 drop(reader);
-                // ... (cleanup code unchanged) ...
                 println!("Cleaning up buttons...");
                 device.clear_all_button_images().await.unwrap();
                 device.flush().await.unwrap();
