@@ -1,5 +1,5 @@
-use soundboard::{AudioCommand, AudioResponse, get_socket_path};
-
+// This file contains the logic from the old src/bin/pipewire_source.rs
+use crate::AudioCommand; // ‼️ Use command from lib
 use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -8,11 +8,13 @@ use spa::param::format_utils;
 use spa::pod::Pod;
 use std::convert::TryInto;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::mem;
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+    mpsc::Receiver, // ‼️ Import the synchronous MPSC receiver
+};
 use std::thread;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -75,111 +77,57 @@ fn save_recording_from_buffer(
     }
 }
 
-fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
-    let socket_path = get_socket_path()?;
-    let _ = fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
-    println!("Control socket listening at {}", socket_path.display());
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let mut reader = BufReader::new(&stream);
-                let mut line = String::new();
-                while let Ok(bytes_read) = reader.read_line(&mut line) {
-                    if bytes_read == 0 {
-                        break;
-                    }
-
-                    let command: AudioCommand = match serde_json::from_str(line.trim()) {
-                        Ok(cmd) => cmd,
-                        Err(e) => {
-                            eprintln!("Failed to parse command: {}", e);
-                            let response = AudioResponse::Error(format!("Parse error: {}", e));
-                            let response_json = serde_json::to_string(&response).unwrap() + "\n";
-                            let _ = (&stream).write_all(response_json.as_bytes());
-                            line.clear();
-                            continue;
-                        }
-                    };
-
-                    let response: AudioResponse;
-                    let mut save_data: Option<(
-                        Vec<f32>,
-                        spa::param::audio::AudioInfoRaw,
-                        PathBuf,
-                    )> = None;
-
-                    {
-                        // Scoped MutexGuard
-                        let mut user_data = data.lock().unwrap();
-                        match command {
-                            AudioCommand::Start(path) => {
-                                if user_data.format.is_none() {
-                                    eprintln!("Refused START: Audio format not yet known.");
-                                    response = AudioResponse::Error("Format not known".to_string());
-                                } else {
-                                    match user_data.state {
-                                        State::Listening => {
-                                            println!("START recording to {}", path.display());
-                                            user_data.state = State::Recording(path);
-                                            user_data.buffer.clear();
-                                            response = AudioResponse::Ok;
-                                        }
-                                        State::Recording(_) => {
-                                            eprintln!("Refused START: Already recording.");
-                                            response = AudioResponse::Error(
-                                                "Already recording".to_string(),
-                                            );
-                                        }
-                                    }
-                                }
+/// ‼️ This function replaces the Unix socket listener.
+/// It runs in a separate thread and blocks on the MPSC channel.
+fn handle_audio_commands(rx: Receiver<AudioCommand>, data: Arc<Mutex<UserData>>) {
+    // This loop blocks on `rx.recv()`, waiting for commands from the main thread.
+    // When the main thread drops its `Sender`, this loop will end.
+    for command in rx {
+        let mut save_data: Option<(Vec<f32>, spa::param::audio::AudioInfoRaw, PathBuf)> = None;
+        {
+            // Scoped MutexGuard
+            let mut user_data = data.lock().unwrap();
+            match command {
+                AudioCommand::Start(path) => {
+                    if user_data.format.is_none() {
+                        eprintln!("Refused START: Audio format not yet known.");
+                    } else {
+                        match user_data.state {
+                            State::Listening => {
+                                println!("START recording to {}", path.display());
+                                user_data.state = State::Recording(path);
+                                user_data.buffer.clear();
                             }
-                            AudioCommand::Stop => {
-                                let old_state =
-                                    std::mem::replace(&mut user_data.state, State::Listening);
-                                if let State::Recording(save_path) = old_state {
-                                    println!("STOP recording.");
-                                    let buffer_to_save = std::mem::take(&mut user_data.buffer);
-                                    let format_to_save = *user_data.format.as_ref().unwrap();
-                                    save_data = Some((buffer_to_save, format_to_save, save_path));
-                                    response = AudioResponse::Ok;
-                                } else {
-                                    eprintln!("Refused STOP: Not recording.");
-                                    response = AudioResponse::Error("Not recording".to_string());
-                                }
-                            }
-                            AudioCommand::Status => {
-                                let status_msg = format!("{:?}", user_data.state);
-                                response = AudioResponse::Status(status_msg);
+                            State::Recording(_) => {
+                                // ‼️ This is now robust: just ignore duplicate Start
+                                eprintln!("Refused START: Already recording.");
                             }
                         }
                     }
-
-                    if let Some((buffer, format, path)) = save_data {
-                        save_recording_from_buffer(buffer, &format, &path);
-                    }
-
-                    let response_json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                        serde_json::to_string(&AudioResponse::Error(e.to_string())).unwrap()
-                    }) + "\n";
-
-                    if let Err(e) = (&stream).write_all(response_json.as_bytes()) {
-                        eprintln!("Failed to write response to client: {}", e);
-                    }
-
-                    line.clear();
                 }
-            }
-            Err(e) => {
-                eprintln!("IPC connection failed: {}", e);
+                AudioCommand::Stop => {
+                    let old_state = std::mem::replace(&mut user_data.state, State::Listening);
+                    if let State::Recording(save_path) = old_state {
+                        println!("STOP recording.");
+                        let buffer_to_save = std::mem::take(&mut user_data.buffer);
+                        let format_to_save = *user_data.format.as_ref().unwrap();
+                        save_data = Some((buffer_to_save, format_to_save, save_path));
+                    } else {
+                        eprintln!("Refused STOP: Not recording.");
+                    }
+                } // ‼️ AudioCommand::Status is gone, not needed.
             }
         }
+        // Save data *outside* the mutex lock
+        if let Some((buffer, format, path)) = save_data {
+            save_recording_from_buffer(buffer, &format, &path);
+        }
     }
-    Ok(())
+    println!("Audio command channel closed. Exiting command loop.");
 }
 
-// ‼️ main() and the rest of the file are unchanged...
-pub fn main() -> Result<(), pw::Error> {
+/// ‼️ This is the main entry point for the audio capture thread.
+pub fn run_capture_loop(rx: Receiver<AudioCommand>) -> Result<(), pw::Error> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
@@ -189,6 +137,8 @@ pub fn main() -> Result<(), pw::Error> {
         state: State::Listening,
         buffer: Vec::new(),
     }));
+
+    // --- PipeWire Stream Setup (Unchanged) ---
     let props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -240,7 +190,6 @@ pub fn main() -> Result<(), pw::Error> {
                         return;
                     }
                     let data = &mut datas[0];
-                    let _n_channels = format.channels();
                     let n_samples = data.chunk().size() / (mem::size_of::<f32>() as u32);
                     if let Some(samples) = data.data() {
                         let mut all_samples = Vec::with_capacity(n_samples as usize);
@@ -258,6 +207,7 @@ pub fn main() -> Result<(), pw::Error> {
             }
         })
         .register()?;
+
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     let obj = pw::spa::pod::Object {
@@ -281,13 +231,15 @@ pub fn main() -> Result<(), pw::Error> {
             | pw::stream::StreamFlags::RT_PROCESS,
         &mut params,
     )?;
+    // --- End of Stream Setup ---
+
+    // ‼️ Spawn the command-handling thread
     let ipc_data = data.clone();
     thread::spawn(move || {
-        if let Err(e) = start_ipc_listener(ipc_data) {
-            eprintln!("IPC listener thread failed: {}", e);
-        }
+        handle_audio_commands(rx, ipc_data);
     });
+
+    // ‼️ Run the mainloop (this blocks the current thread, as intended)
     mainloop.run();
-    let _ = fs::remove_file("/tmp/rust-audio-monitor.sock");
     Ok(())
 }
