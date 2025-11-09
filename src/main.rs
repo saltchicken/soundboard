@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 //
 const SOCKET_PATH: &str = "/tmp/rust-audio-monitor.sock";
-const PLAYBACK_SINK_NAME: Option<&str> = Some("MyMixer");
-// const PLAYBACK_SINK_NAME: Option<&str> = None;
+// const PLAYBACK_SINK_NAME: Option<&str> = Some("MyMixer");
+const PLAYBACK_SINK_NAME: Option<&str> = None;
 
 async fn play_audio_file(path: &PathBuf) -> io::Result<()> {
     let player = "pw-play"; // ‼️ Assumes pw-play is in your PATH
@@ -85,15 +85,13 @@ fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(72, 72, move |_, _| color))
 }
 
-#[tokio::main]
-async fn main() {
-    // ‼️ --- START OF NEW PROCESS SPAWNING CODE ---
+fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
     // 1. Find the path to our own executable
     let mut server_exe_path = match env::current_exe() {
         Ok(path) => path,
         Err(e) => {
             eprintln!("Failed to get current executable path: {}", e);
-            return;
+            return Err(e);
         }
     };
 
@@ -110,7 +108,7 @@ async fn main() {
     );
 
     // 4. Spawn the pipewire_source binary as a child process
-    let mut server_process: Child = Command::new(&server_exe_path)
+    let server_process: Child = Command::new(&server_exe_path)
         .stdout(Stdio::null()) // Silences the server's stdout
         .stderr(Stdio::null()) // Silences the server's stderr
         .spawn()
@@ -122,10 +120,16 @@ async fn main() {
         server_pid
     );
 
-    // 5. Give the server a moment to start and create the socket.
-    //    A more robust way is a retry-loop on connect, but this is simpler.
+    Ok(server_process)
+}
+
+#[tokio::main]
+async fn main() {
+    let mut server_process = start_pipewire_source().unwrap();
+
+    // TODO: Give the server a moment to start and create the socket.
+    // A more robust way is a retry-loop on connect, but this is simpler.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    // ‼️ --- END OF NEW PROCESS SPAWNING CODE ---
 
     let img_rec_off =
         open("src/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
