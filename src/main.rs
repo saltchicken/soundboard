@@ -6,6 +6,7 @@ mod audio_player;
 use crate::audio_player::{PlaybackSink, play_audio_file};
 mod lcd;
 use crate::lcd::{create_fallback_image, create_fallback_lcd_image, update_lcd_mode};
+mod audio_processor;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
 
 use image::open;
@@ -13,6 +14,8 @@ use image::{DynamicImage, Rgb};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+
+use tokio::fs as tokio_fs;
 
 use std::path::{Path, PathBuf};
 use tokio::sync::watch;
@@ -23,15 +26,14 @@ enum Mode {
     Edit,
 }
 
-
-
-
 struct AppState {
     mode: Mode,
     playback_sink: PlaybackSink,
+    playback_volume: HashMap<u8, f64>,
     button_files: HashMap<u8, PathBuf>,
     active_recording_key: Option<u8>,
     selected_for_delete: Option<u8>,
+    pitch_shift_semitones: HashMap<u8, f64>,
 
     img_rec_off: DynamicImage,
     img_rec_on: DynamicImage,
@@ -40,12 +42,8 @@ struct AppState {
     img_lcd_edit: DynamicImage,
 }
 
-
-
-
 impl AppState {
-
-    async fn handle_encoder_twist(&mut self, dial: u8, device: &AsyncStreamDeck) {
+    async fn handle_encoder_twist(&mut self, dial: u8, ticks: i32, device: &AsyncStreamDeck) {
         if dial == 0 {
             self.mode = match self.mode {
                 Mode::Playback => Mode::Edit,
@@ -78,9 +76,40 @@ impl AppState {
             )
             .await;
             device.flush().await.unwrap();
+        } else if dial == 1 {
+            if self.mode == Mode::Edit {
+                if let Some(key) = self.selected_for_delete {
+                    // A key is selected, so adjust its volume
+                    // ‼️ Default to 1.0 (100%) if not present
+                    let current_volume = self.playback_volume.entry(key).or_insert(1.0);
+                    *current_volume += ticks as f64 * 0.05; // 5% per tick
+                    *current_volume = current_volume.clamp(0.0, 1.5); // 0% to 150%
+                    println!(
+                        "Set volume for key {} to {:.0}%",
+                        key,
+                        *current_volume * 100.0
+                    );
+                } else {
+                    println!("Dial 1 (Volume) turned in Edit mode, but no sample is selected.");
+                }
+            }
+        } else if dial == 2 {
+            if self.mode == Mode::Edit {
+                if let Some(key) = self.selected_for_delete {
+                    // A key is selected, so adjust its pitch
+                    let current_pitch = self.pitch_shift_semitones.entry(key).or_insert(0.0);
+                    // Adjust by 0.1 semitones per "tick" of the dial
+                    *current_pitch += ticks as f64 * 0.1;
+                    println!(
+                        "Set pitch for key {} to {:.2} semitones",
+                        key, *current_pitch
+                    );
+                } else {
+                    println!("Dial 2 turned in Edit mode, but no sample is selected.");
+                }
+            }
         }
     }
-
 
     async fn handle_encoder_down(&mut self, dial: u8, device: &AsyncStreamDeck) {
         if dial == 0 {
@@ -101,6 +130,8 @@ impl AppState {
                         match fs::remove_file(path) {
                             Ok(_) => {
                                 println!("...File {} deleted.", path.display());
+                                self.pitch_shift_semitones.remove(&key_to_delete);
+                                self.playback_volume.remove(&key_to_delete);
                                 device
                                     .set_button_image(key_to_delete, self.img_rec_off.clone())
                                     .await
@@ -125,7 +156,6 @@ impl AppState {
             }
         }
     }
-
 
     async fn handle_button_down(&mut self, key: u8, device: &AsyncStreamDeck, socket_path: &Path) {
         match self.mode {
@@ -232,10 +262,10 @@ impl AppState {
         }
     }
 
-
     async fn handle_button_up(&mut self, key: u8, device: &AsyncStreamDeck, socket_path: &Path) {
         match self.mode {
             Mode::Playback => {
+                // ... (stop-recording logic is unchanged) ...
                 if self.active_recording_key == Some(key) {
                     println!(
                         "Button {} up (Playback Mode, was recording), sending STOP",
@@ -261,16 +291,90 @@ impl AppState {
                 } else if let Some(path) = self.button_files.get(&key) {
                     if path.exists() {
                         println!("Button {} up (Playback Mode). Triggering playback.", key);
-                        // Spawn playback in a new task
-                        let path_clone = path.clone();
 
+                        // ‼️ Get pitch shift value for this key
+                        let pitch_shift =
+                            self.pitch_shift_semitones.get(&key).cloned().unwrap_or(0.0);
+                        let path_clone = path.clone();
                         let sink_clone = self.playback_sink;
+                        let volume_clone = self.playback_volume.get(&key).cloned().unwrap_or(1.0);
+
+                        // ‼️ Spawn a new task to handle playback
+                        // This task will create a temp file if needed, play it,
+                        // and then clean up the temp file.
                         tokio::spawn(async move {
-                            if let Err(e) = play_audio_file(&path_clone, sink_clone).await {
+                            let mut temp_path: Option<PathBuf> = None;
+
+                            // 1. Check if we need to apply pitch shift
+                            // We use an epsilon (0.01) to avoid floating point issues
+                            let path_to_play = if pitch_shift.abs() > 0.01 {
+                                println!("...Applying pitch shift: {:.2} semitones", pitch_shift);
+
+                                // ‼️ Create a *new* clone just for the blocking task
+                                let path_for_blocking = path_clone.clone();
+
+                                // 2. Run the synchronous file I/O in a blocking thread
+                                // This prevents blocking the main async runtime
+                                match tokio::task::spawn_blocking(move || {
+                                    // ‼️ Use the new clone here
+                                    audio_processor::create_pitched_copy_sync(
+                                        &path_for_blocking,
+                                        pitch_shift,
+                                    )
+                                })
+                                .await
+                                {
+                                    Ok(Ok(new_path)) => {
+                                        // Successfully created temp file
+                                        temp_path = Some(new_path.clone());
+                                        new_path
+                                    }
+                                    Ok(Err(e)) => {
+                                        // Failed to create, play original
+                                        eprintln!(
+                                            "Failed to create pitched copy: {}. Playing original.",
+                                            e
+                                        );
+                                        // ‼️ This use of path_clone is now valid
+                                        path_clone
+                                    }
+                                    Err(e) => {
+                                        // Task itself failed, play original
+                                        eprintln!(
+                                            "Task join error for pitched copy: {}. Playing original.",
+                                            e
+                                        );
+                                        // ‼️ This use of path_clone is now valid
+                                        path_clone
+                                    }
+                                }
+                            } else {
+                                // No pitch shift, play original
+                                path_clone
+                            };
+
+                            // 3. Play the chosen file (original or temp)
+                            if let Err(e) =
+                                play_audio_file(&path_to_play, sink_clone, volume_clone).await
+                            {
                                 eprintln!("Playback failed: {}", e);
                             }
+
+                            // 4. Clean up the temp file if one was created
+                            if let Some(p) = temp_path {
+                                if let Err(e) = tokio_fs::remove_file(&p).await {
+                                    eprintln!(
+                                        "Failed to clean up temp file {}: {}",
+                                        p.display(),
+                                        e
+                                    );
+                                } else {
+                                    println!("Cleaned up temp file: {}", p.display());
+                                }
+                            }
                         });
-                        // Set image back to "play"
+
+                        // Set image back to "play" immediately
                         device
                             .set_button_image(key, self.img_play.clone())
                             .await
@@ -279,8 +383,7 @@ impl AppState {
                     }
                 }
             }
-            Mode::Edit => {
-                // ButtonUp does nothing in Edit mode now.
+            Mode::Edit => { // ButtonUp does nothing in Edit mode now.
                 // Selection is handled on ButtonDown.
                 // Deletion is handled by Encoder 3.
             }
@@ -352,7 +455,6 @@ async fn main() {
         }
     });
 
-
     let img_rec_off =
         open("assets/rec_off.png").unwrap_or_else(|_| create_fallback_image(Rgb([80, 80, 80])));
     let img_rec_on =
@@ -378,15 +480,14 @@ async fn main() {
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
 
-
-
-
                 let mut app_state = AppState {
                     mode: Mode::Playback,
                     playback_sink: PlaybackSink::Default,
+                    playback_volume: HashMap::new(),
                     button_files: HashMap::new(),
                     active_recording_key: None,
                     selected_for_delete: None,
+                    pitch_shift_semitones: HashMap::new(),
 
                     img_rec_off: img_rec_off.clone(),
                     img_rec_on: img_rec_on.clone(),
@@ -398,7 +499,6 @@ async fn main() {
                 println!("Starting in {:?} mode.", app_state.mode);
                 println!("Playback sink set to: {:?}", app_state.playback_sink);
 
-
                 update_lcd_mode(
                     &device,
                     app_state.mode,
@@ -407,14 +507,12 @@ async fn main() {
                 )
                 .await;
 
-
                 for i in 0..8 {
                     let file_name = format!("recording_{}.wav", (b'A' + i) as char);
                     let mut file_path = audio_storage_path.clone();
                     file_path.push(file_name);
                     app_state.button_files.insert(i, file_path);
                 }
-
 
                 for (key, path) in &app_state.button_files {
                     let initial_image = if path.exists() {
@@ -428,9 +526,6 @@ async fn main() {
                 device.flush().await.unwrap();
                 let reader = device.get_reader();
 
-
-
-
                 loop {
                     let updates = match reader.read(100.0).await {
                         Ok(updates) => updates,
@@ -438,24 +533,21 @@ async fn main() {
                     };
 
                     for update in updates {
-
                         match update {
-                            DeviceStateUpdate::EncoderTwist(dial, _ticks) => {
-
-                                app_state.handle_encoder_twist(dial, &device).await;
+                            DeviceStateUpdate::EncoderTwist(dial, ticks) => {
+                                app_state
+                                    .handle_encoder_twist(dial, ticks as i32, &device)
+                                    .await;
                             }
                             DeviceStateUpdate::EncoderDown(dial) => {
-
                                 app_state.handle_encoder_down(dial, &device).await;
                             }
                             DeviceStateUpdate::ButtonDown(key) => {
-
                                 app_state
                                     .handle_button_down(key, &device, &socket_path)
                                     .await;
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
-
                                 app_state.handle_button_up(key, &device, &socket_path).await;
                             }
                             _ => {}
@@ -486,3 +578,4 @@ async fn main() {
         }
     }
 }
+

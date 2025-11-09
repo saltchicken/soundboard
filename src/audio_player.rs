@@ -12,8 +12,13 @@ pub enum PlaybackSink {
 }
 
 /// Asynchronously plays an audio file through PipeWire.
-pub async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::Result<()> {
+pub async fn play_audio_file(
+    path: &PathBuf,
+    sink_target: PlaybackSink,
+    volume: f64,
+) -> io::Result<()> {
     let player = "pw-play";
+    let volume_str = volume.to_string();
     println!(
         "Attempting to play file with '{}': {}",
         player,
@@ -21,10 +26,15 @@ pub async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::R
     );
 
     let mut cmd_default = Command::new(player);
+    cmd_default.arg("--volume");
+    cmd_default.arg(&volume_str);
     cmd_default.arg(path);
     cmd_default.stdout(Stdio::null()).stderr(Stdio::null());
 
     let mut cmd_mixer = Command::new(player);
+    cmd_default.arg("--volume");
+    cmd_default.arg(&volume_str);
+
     cmd_mixer.arg("--target");
     cmd_mixer.arg("MyMixer");
     cmd_mixer.arg(path);
