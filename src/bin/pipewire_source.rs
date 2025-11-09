@@ -1,3 +1,5 @@
+use soundboard::{AudioCommand, AudioResponse};
+
 use hound::{SampleFormat, WavSpec, WavWriter};
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -78,79 +80,91 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
     let _ = fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
     println!("Control socket listening at {}", socket_path);
-
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let mut reader = BufReader::new(&stream);
                 let mut line = String::new();
-
                 while let Ok(bytes_read) = reader.read_line(&mut line) {
                     if bytes_read == 0 {
                         break;
                     }
 
-                    let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
-                    let command = parts.first().unwrap_or(&"");
-                    let payload = parts.get(1);
+                    let command: AudioCommand = match serde_json::from_str(line.trim()) {
+                        Ok(cmd) => cmd,
+                        Err(e) => {
+                            eprintln!("Failed to parse command: {}", e);
+                            let response = AudioResponse::Error(format!("Parse error: {}", e));
+                            let response_json = serde_json::to_string(&response).unwrap() + "\n";
+                            let _ = (&stream).write_all(response_json.as_bytes());
+                            line.clear();
+                            continue;
+                        }
+                    };
 
-                    let mut user_data = data.lock().unwrap();
+                    let response: AudioResponse;
+                    let mut save_data: Option<(
+                        Vec<f32>,
+                        spa::param::audio::AudioInfoRaw,
+                        PathBuf,
+                    )> = None;
 
-                    match *command {
-                        "START" => {
-                            if let Some(path_str) = payload {
+                    {
+                        // Scoped MutexGuard
+                        let mut user_data = data.lock().unwrap();
+                        match command {
+                            AudioCommand::Start(path) => {
                                 if user_data.format.is_none() {
                                     eprintln!("Refused START: Audio format not yet known.");
-                                    continue;
-                                }
-                                match user_data.state {
-                                    State::Listening => {
-                                        let path = PathBuf::from(path_str);
-                                        println!("START recording to {}", path.display());
-                                        user_data.state = State::Recording(path);
-                                        user_data.buffer.clear();
+                                    response = AudioResponse::Error("Format not known".to_string());
+                                } else {
+                                    match user_data.state {
+                                        State::Listening => {
+                                            println!("START recording to {}", path.display());
+                                            user_data.state = State::Recording(path);
+                                            user_data.buffer.clear();
+                                            response = AudioResponse::Ok;
+                                        }
+                                        State::Recording(_) => {
+                                            eprintln!("Refused START: Already recording.");
+                                            response = AudioResponse::Error(
+                                                "Already recording".to_string(),
+                                            );
+                                        }
                                     }
-                                    State::Recording(_) => {
-                                        eprintln!("Refused START: Already recording.");
-                                    }
                                 }
-                            } else {
-                                eprintln!("Invalid START: Missing file path.");
+                            }
+                            AudioCommand::Stop => {
+                                let old_state =
+                                    std::mem::replace(&mut user_data.state, State::Listening);
+                                if let State::Recording(save_path) = old_state {
+                                    println!("STOP recording.");
+                                    let buffer_to_save = std::mem::take(&mut user_data.buffer);
+                                    let format_to_save = *user_data.format.as_ref().unwrap();
+                                    save_data = Some((buffer_to_save, format_to_save, save_path));
+                                    response = AudioResponse::Ok;
+                                } else {
+                                    eprintln!("Refused STOP: Not recording.");
+                                    response = AudioResponse::Error("Not recording".to_string());
+                                }
+                            }
+                            AudioCommand::Status => {
+                                let status_msg = format!("{:?}", user_data.state);
+                                response = AudioResponse::Status(status_msg);
                             }
                         }
-                        "STOP" => {
-                            let old_state =
-                                std::mem::replace(&mut user_data.state, State::Listening);
+                    }
 
-                            if let State::Recording(save_path) = old_state {
-                                println!("STOP recording.");
-                                let buffer_to_save = std::mem::take(&mut user_data.buffer);
-                                let format_to_save = *user_data.format.as_ref().unwrap();
-                                drop(user_data);
+                    if let Some((buffer, format, path)) = save_data {
+                        save_recording_from_buffer(buffer, &format, &path);
+                    }
 
-                                save_recording_from_buffer(
-                                    buffer_to_save,
-                                    &format_to_save,
-                                    &save_path,
-                                );
-                            } else {
-                                eprintln!("Refused STOP: Not recording.");
-                            }
-                        }
-                        "STATUS" => {
-                            let status_msg = format!("STATUS: {:?}\n", user_data.state);
+                    let response_json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                        serde_json::to_string(&AudioResponse::Error(e.to_string())).unwrap()
+                    }) + "\n";
 
-                            // Write the message back to the client socket
-                            // Use (&stream) to borrow the stream for writing
-                            if let Err(e) = (&stream).write_all(status_msg.as_bytes()) {
-                                eprintln!("Failed to write status to client: {}", e);
-                            } else {
-                                println!("Sent status to client: {:?}", user_data.state);
-                            }
-                        }
-                        _ => {
-                            eprintln!("Unknown command: {}", line.trim());
-                        }
+                    if let Err(e) = (&stream).write_all(response_json.as_bytes()) {
+                        eprintln!("Failed to write response to client: {}", e);
                     }
 
                     line.clear();
@@ -161,10 +175,10 @@ fn start_ipc_listener(data: Arc<Mutex<UserData>>) -> std::io::Result<()> {
             }
         }
     }
-
     Ok(())
 }
 
+// ‼️ main() and the rest of the file are unchanged...
 pub fn main() -> Result<(), pw::Error> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -277,4 +291,3 @@ pub fn main() -> Result<(), pw::Error> {
     let _ = fs::remove_file("/tmp/rust-audio-monitor.sock");
     Ok(())
 }
-
