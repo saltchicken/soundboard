@@ -1,4 +1,6 @@
+use elgato_streamdeck::images::convert_image_with_format;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
+
 use image::open;
 use image::{DynamicImage, Rgb};
 use std::collections::HashMap;
@@ -85,6 +87,10 @@ fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(72, 72, move |_, _| color))
 }
 
+fn create_fallback_lcd_image(color: Rgb<u8>) -> DynamicImage {
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(800, 100, move |_, _| color))
+}
+
 fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
     // 1. Find the path to our own executable
     let mut server_exe_path = match env::current_exe() {
@@ -163,6 +169,8 @@ async fn main() {
     let img_rec_on =
         open("src/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
     let img_play = open("src/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
+    let img_lcd_strip =
+        open("src/lcd_strip.png").unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20])));
 
     match new_hidapi() {
         Ok(hid) => {
@@ -178,6 +186,20 @@ async fn main() {
 
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
+
+                println!("Setting LCD touch strip image...");
+
+                if let Some(format) = device.kind().lcd_image_format() {
+                    let scaled_image = img_lcd_strip.clone().resize_to_fill(
+                        format.size.0 as u32,
+                        format.size.1 as u32,
+                        image::imageops::FilterType::Nearest,
+                    );
+                    let converted_image = convert_image_with_format(format, scaled_image).unwrap();
+                    let _ = device.write_lcd_fill(&converted_image).await;
+                } else {
+                    eprintln!("Failed to set LCD image (is this a Stream Deck Plus?)",);
+                }
 
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
                 for i in 0..8 {
