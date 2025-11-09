@@ -1,4 +1,3 @@
-// ‼️ File: src/main.rs
 use elgato_streamdeck::images::convert_image_with_format;
 use elgato_streamdeck::{AsyncStreamDeck, DeviceStateUpdate, list_devices, new_hidapi};
 use image::open;
@@ -26,17 +25,14 @@ enum Mode {
     Edit,
 }
 
-// ‼️ Define the three sink states
-#[derive(Debug, PartialEq, Eq, Clone, Copy)] // ‼️
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum PlaybackSink {
-    // ‼️
-    Default, // ‼️
-    Mixer,   // ‼️
-    Both,    // ‼️
-} // ‼️
+    Default,
+    Mixer,
+    Both,
+}
 
 async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::Result<()> {
-    // ‼️ Changed argument
     let player = "pw-play";
     println!(
         "Attempting to play file with '{}': {}",
@@ -44,84 +40,70 @@ async fn play_audio_file(path: &PathBuf, sink_target: PlaybackSink) -> io::Resul
         path.display()
     );
 
-    // ‼️ Create command templates
-    let mut cmd_default = Command::new(player); // ‼️
-    cmd_default.arg(path); // ‼️
-    cmd_default.stdout(Stdio::null()).stderr(Stdio::null()); // ‼️ Silence output
+    let mut cmd_default = Command::new(player);
+    cmd_default.arg(path);
+    cmd_default.stdout(Stdio::null()).stderr(Stdio::null());
 
-    let mut cmd_mixer = Command::new(player); // ‼️
-    cmd_mixer.arg("--target"); // ‼️
-    cmd_mixer.arg("MyMixer"); // ‼️
-    cmd_mixer.arg(path); // ‼️
-    cmd_mixer.stdout(Stdio::null()).stderr(Stdio::null()); // ‼️ Silence output
+    let mut cmd_mixer = Command::new(player);
+    cmd_mixer.arg("--target");
+    cmd_mixer.arg("MyMixer");
+    cmd_mixer.arg(path);
+    cmd_mixer.stdout(Stdio::null()).stderr(Stdio::null());
 
     match sink_target {
-        // ‼️
         PlaybackSink::Default => {
-            // ‼️
-            println!("...routing playback to Default."); // ‼️
-            let status = cmd_default.status().await?; // ‼️
+            println!("...routing playback to Default.");
+            let status = cmd_default.status().await?;
             if !status.success() {
-                // ‼️
-                let msg = format!("Playback command (Default) failed with status: {}", status); // ‼️
-                eprintln!("{}", msg); // ‼️
-                return Err(io::Error::other(msg)); // ‼️
-            } // ‼️
-        } // ‼️
+                let msg = format!("Playback command (Default) failed with status: {}", status);
+                eprintln!("{}", msg);
+                return Err(io::Error::other(msg));
+            }
+        }
         PlaybackSink::Mixer => {
-            // ‼️
-            println!("...routing playback to sink: MyMixer"); // ‼️
-            let status = cmd_mixer.status().await?; // ‼️
+            println!("...routing playback to sink: MyMixer");
+            let status = cmd_mixer.status().await?;
             if !status.success() {
-                // ‼️
-                let msg = format!("Playback command (MyMixer) failed with status: {}", status); // ‼️
-                eprintln!("{}", msg); // ‼️
-                return Err(io::Error::other(msg)); // ‼️
-            } // ‼️
-        } // ‼️
+                let msg = format!("Playback command (MyMixer) failed with status: {}", status);
+                eprintln!("{}", msg);
+                return Err(io::Error::other(msg));
+            }
+        }
         PlaybackSink::Both => {
-            // ‼️
-            println!("...routing playback to BOTH Default and MyMixer."); // ‼️
+            println!("...routing playback to BOTH Default and MyMixer.");
             // Spawn both commands concurrently
-            let default_handle = tokio::spawn(async move { cmd_default.status().await }); // ‼️
-            let mixer_handle = tokio::spawn(async move { cmd_mixer.status().await }); // ‼️
+            let default_handle = tokio::spawn(async move { cmd_default.status().await });
+            let mixer_handle = tokio::spawn(async move { cmd_mixer.status().await });
 
             // Await both handles
             match tokio::try_join!(default_handle, mixer_handle) {
-                // ‼️
                 Ok((Ok(status_default), Ok(status_mixer))) => {
-                    // ‼️
                     if !status_default.success() {
-                        // ‼️
-                        eprintln!("Playback (Default) failed with status: {}", status_default); // ‼️
-                    } // ‼️
+                        eprintln!("Playback (Default) failed with status: {}", status_default);
+                    }
                     if !status_mixer.success() {
-                        // ‼️
-                        eprintln!("Playback (MyMixer) failed with status: {}", status_mixer); // ‼️
-                    } // ‼️
+                        eprintln!("Playback (MyMixer) failed with status: {}", status_mixer);
+                    }
                     if !status_default.success() || !status_mixer.success() {
-                        // ‼️
-                        return Err(io::Error::other("One or more playback commands failed.")); // ‼️
-                    } // ‼️
-                } // ‼️
+                        return Err(io::Error::other("One or more playback commands failed."));
+                    }
+                }
                 Ok((Err(e), _)) | Ok((_, Err(e))) => {
-                    // ‼️
-                    let msg = format!("Failed to get command status: {}", e); // ‼️
-                    eprintln!("{}", msg); // ‼️
-                    return Err(io::Error::other(msg)); // ‼️
-                } // ‼️
+                    let msg = format!("Failed to get command status: {}", e);
+                    eprintln!("{}", msg);
+                    return Err(io::Error::other(msg));
+                }
                 Err(e) => {
-                    // ‼️
-                    let msg = format!("Task join failed: {}", e); // ‼️
-                    eprintln!("{}", msg); // ‼️
-                    return Err(io::Error::other(msg)); // ‼️
-                } // ‼️
-            } // ‼️
-        } // ‼️
-    } // ‼️
+                    let msg = format!("Task join failed: {}", e);
+                    eprintln!("{}", msg);
+                    return Err(io::Error::other(msg));
+                }
+            }
+        }
+    }
 
-    println!("Playback successful for sink: {:?}", sink_target); // ‼️
-    Ok(()) // ‼️
+    println!("Playback successful for sink: {:?}", sink_target);
+    Ok(())
 }
 
 async fn send_audio_command(
@@ -189,13 +171,11 @@ async fn send_audio_command(
     }
 }
 
-// ‼️ Helper function to set the LCD strip image based on the mode
 async fn update_lcd_mode(
-    // ‼️
-    device: &AsyncStreamDeck,    // ‼️
-    mode: Mode,                  // ‼️
-    img_playback: &DynamicImage, // ‼️
-    img_edit: &DynamicImage,     // ‼️
+    device: &AsyncStreamDeck,
+    mode: Mode,
+    img_playback: &DynamicImage,
+    img_edit: &DynamicImage,
 ) {
     // ... (This function is unchanged)
     println!("Setting LCD mode to: {:?}", mode);
@@ -217,17 +197,14 @@ async fn update_lcd_mode(
 }
 
 fn create_fallback_image(color: Rgb<u8>) -> DynamicImage {
-    // ... (This function is unchanged)
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(72, 72, move |_, _| color))
 }
 
 fn create_fallback_lcd_image(color: Rgb<u8>) -> DynamicImage {
-    // ... (This function is unchanged)
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(800, 100, move |_, _| color))
 }
 
 fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
-    // ... (This function is unchanged)
     // 1. Find the path to our own executable
     let mut server_exe_path = match env::current_exe() {
         Ok(path) => path,
@@ -256,7 +233,6 @@ fn start_pipewire_source() -> Result<tokio::process::Child, std::io::Error> {
 }
 
 async fn wait_for_server(socket_path: &Path) -> io::Result<()> {
-    // ... (This function is unchanged)
     let start = tokio::time::Instant::now();
     println!("Waiting for server socket at {}...", socket_path.display());
     loop {
@@ -348,12 +324,11 @@ async fn main() {
         open("assets/rec_on.png").unwrap_or_else(|_| create_fallback_image(Rgb([255, 0, 0])));
     let img_play =
         open("assets/play.png").unwrap_or_else(|_| create_fallback_image(Rgb([0, 255, 0])));
-    // ‼️ Load mode-specific LCD images
-    let img_lcd_playback =
-        open("assets/lcd_strip.png") // ‼️ Use existing asset
-            .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20]))); // ‼️ Green fallback
-    let img_lcd_edit = open("assets/lcd_edit.png") // ‼️ New asset for edit mode
-        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([200, 20, 20]))); // ‼️ Red fallback
+
+    let img_lcd_playback = open("assets/lcd_strip.png")
+        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([20, 200, 20])));
+    let img_lcd_edit = open("assets/lcd_edit.png")
+        .unwrap_or_else(|_| create_fallback_lcd_image(Rgb([200, 20, 20])));
     match new_hidapi() {
         Ok(hid) => {
             for (kind, serial) in list_devices(&hid) {
@@ -368,11 +343,10 @@ async fn main() {
                 device.set_brightness(50).await.unwrap();
                 device.clear_all_button_images().await.unwrap();
 
-                // ‼️ Initialize states
                 let mut mode = Mode::Playback;
-                let mut playback_sink: PlaybackSink = PlaybackSink::Default; // ‼️ Use new enum
+                let mut playback_sink: PlaybackSink = PlaybackSink::Default;
                 println!("Starting in {:?} mode.", mode);
-                println!("Playback sink set to: {:?}", playback_sink); // ‼️ Updated log
+                println!("Playback sink set to: {:?}", playback_sink);
 
                 update_lcd_mode(&device, mode, &img_lcd_playback, &img_lcd_edit).await;
                 let mut button_files: HashMap<u8, PathBuf> = HashMap::new();
@@ -421,14 +395,12 @@ async fn main() {
                             }
                             DeviceStateUpdate::EncoderDown(dial) => {
                                 if dial == 0 {
-                                    // ‼️ Cycle through the three states
                                     playback_sink = match playback_sink {
-                                        // ‼️
-                                        PlaybackSink::Default => PlaybackSink::Mixer, // ‼️
-                                        PlaybackSink::Mixer => PlaybackSink::Both,    // ‼️
-                                        PlaybackSink::Both => PlaybackSink::Default,  // ‼️
-                                    }; // ‼️
-                                    println!("Playback sink set to: {:?}", playback_sink); // ‼️
+                                        PlaybackSink::Default => PlaybackSink::Mixer,
+                                        PlaybackSink::Mixer => PlaybackSink::Both,
+                                        PlaybackSink::Both => PlaybackSink::Default,
+                                    };
+                                    println!("Playback sink set to: {:?}", playback_sink);
                                 }
                             }
                             DeviceStateUpdate::ButtonDown(key) => {
@@ -531,7 +503,6 @@ async fn main() {
                                 }
                             }
                             DeviceStateUpdate::ButtonUp(key) => {
-                                // ‼️ Wrap logic in mode match
                                 match mode {
                                     Mode::Playback => {
                                         // In Playback mode, ButtonUp triggers playback
@@ -544,12 +515,11 @@ async fn main() {
 
                                                 // Spawn playback in a new task
                                                 let path_clone = path.clone();
-                                                let sink_clone = playback_sink; // ‼️ Clone the enum state
+                                                let sink_clone = playback_sink;
                                                 tokio::spawn(async move {
                                                     if let Err(e) =
                                                         play_audio_file(&path_clone, sink_clone)
                                                             .await
-                                                    // ‼️ Pass enum
                                                     {
                                                         eprintln!("Playback failed: {}", e);
                                                     }
@@ -637,7 +607,6 @@ async fn main() {
                                                     }
                                                 }
                                             } else {
-                                                // ‼️ Held for < 2s in Edit Mode: Do nothing
                                                 println!("...Hold < 2s. (Edit Mode) No action.");
                                                 if let Some(path) = button_files.get(&key) {
                                                     if path.exists() {
